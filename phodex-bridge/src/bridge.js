@@ -167,6 +167,8 @@ function startBridge({
   const forwardedRequestMethodsById = new Map();
   const relaySanitizedResponseMethodsById = new Map();
   const forwardedRequestDiagnosticsById = new Map();
+  const coalescedThreadListRequestsByKey = new Map();
+  const coalescedThreadListKeyByPrimaryId = new Map();
   const trackedForwardedRequestMethods = new Set([
     "account/login/start",
     "account/login/cancel",
@@ -479,10 +481,8 @@ function startBridge({
     desktopRefresher.handleOutbound(message);
     pushNotificationTracker.handleOutbound(message);
     rememberThreadFromMessage("codex", message);
-    secureTransport.queueOutboundApplicationMessage(
-      sanitizeRelayBoundCodexMessage(message),
-      sendRelayWireMessage
-    );
+    sendApplicationResponse(message);
+    sendCoalescedThreadListResponses(message);
   });
 
   codex.onClose((code, signal) => {
@@ -513,6 +513,8 @@ function startBridge({
     failBridgeManagedCodexRequests(new Error("Codex transport closed before the bridge request completed."));
     forwardedRequestMethodsById.clear();
     forwardedRequestDiagnosticsById.clear();
+    coalescedThreadListRequestsByKey.clear();
+    coalescedThreadListKeyByPrimaryId.clear();
     if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) {
       socket.close();
     }
@@ -584,6 +586,9 @@ function startBridge({
     const codexRequest = disableUnsupportedReasoningSummaryForTurnStart(rawMessage);
     rememberForwardedRequestMethod(rawMessage);
     rememberForwardedRequestDiagnostic(codexRequest);
+    if (coalesceThreadListRequestIfNeeded(codexRequest)) {
+      return;
+    }
     rememberThreadFromMessage("phone", codexRequest);
     codex.send(codexRequest);
   }
@@ -928,6 +933,94 @@ function startBridge({
         forwardedRequestDiagnosticsById.delete(requestId);
       }
     }
+    for (const [key, trackedRequest] of coalescedThreadListRequestsByKey.entries()) {
+      if (!trackedRequest || (now - trackedRequest.createdAt) >= forwardedRequestMethodTTLms) {
+        coalescedThreadListRequestsByKey.delete(key);
+        coalescedThreadListKeyByPrimaryId.delete(String(trackedRequest?.primaryId));
+      }
+    }
+  }
+
+  function coalesceThreadListRequestIfNeeded(rawMessage) {
+    const parsed = safeParseJSON(rawMessage);
+    if (parsed?.method !== "thread/list" || parsed?.id == null) {
+      return false;
+    }
+
+    const requestId = String(parsed.id);
+    const key = `thread/list:${stableStringify(parsed.params || {})}`;
+    const existing = coalescedThreadListRequestsByKey.get(key);
+    if (!existing) {
+      coalescedThreadListRequestsByKey.set(key, {
+        primaryId: requestId,
+        duplicateIds: [],
+        createdAt: Date.now(),
+      });
+      coalescedThreadListKeyByPrimaryId.set(requestId, key);
+      return false;
+    }
+
+    existing.duplicateIds.push(requestId);
+    console.log(
+      `[remodex] coalesced duplicate thread/list id=${requestId} primary=${existing.primaryId}`
+    );
+    return true;
+  }
+
+  function sendCoalescedThreadListResponses(rawMessage) {
+    const parsed = safeParseJSON(rawMessage);
+    const responseId = parsed?.id;
+    if (responseId == null) {
+      return;
+    }
+
+    const key = coalescedThreadListKeyByPrimaryId.get(String(responseId));
+    if (!key) {
+      return;
+    }
+
+    coalescedThreadListKeyByPrimaryId.delete(String(responseId));
+    const trackedRequest = coalescedThreadListRequestsByKey.get(key);
+    coalescedThreadListRequestsByKey.delete(key);
+    if (!trackedRequest?.duplicateIds?.length) {
+      return;
+    }
+
+    for (const duplicateId of trackedRequest.duplicateIds) {
+      const duplicateResponse = cloneJsonRpcResponseWithId(rawMessage, duplicateId);
+      if (!duplicateResponse) {
+        continue;
+      }
+      forwardedRequestDiagnosticsById.delete(String(duplicateId));
+      console.log(
+        `[remodex] codex -> phone method=thread/list id=${duplicateId} coalescedFrom=${String(responseId)} hasError=${parsed?.error != null}`
+      );
+      sendApplicationResponse(duplicateResponse);
+    }
+  }
+
+  function cloneJsonRpcResponseWithId(rawMessage, nextId) {
+    const parsed = safeParseJSON(rawMessage);
+    if (!parsed || parsed.id == null) {
+      return "";
+    }
+
+    return JSON.stringify({
+      ...parsed,
+      id: nextId,
+    });
+  }
+
+  function stableStringify(value) {
+    if (Array.isArray(value)) {
+      return `[${value.map(stableStringify).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value).sort().map((key) => {
+        return `${JSON.stringify(key)}:${stableStringify(value[key])}`;
+      }).join(",")}}`;
+    }
+    return JSON.stringify(value);
   }
 
   function rememberForwardedRequestDiagnostic(rawMessage) {
