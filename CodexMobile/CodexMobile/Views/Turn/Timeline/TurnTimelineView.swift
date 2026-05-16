@@ -187,211 +187,286 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
         )
     }
 
-    var body: some View {
-        if messages.isEmpty && !hasEarlierMessages && olderHistoryLoadErrorMessage == nil && !isLoadingRemoteEarlierMessages {
-            // Keep new/empty chats static to avoid scroll indicators and inert scrolling.
-            emptyTimelineState
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(.systemBackground))
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    onTapOutsideComposer()
-                }
-                .simultaneousGesture(emptyStateKeyboardDismissGesture)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    footer()
-                }
-                .onAppear {
-                    beginScrollSessionIfNeeded()
-                }
-                .onChange(of: threadID) { _, _ in
-                    beginScrollSessionIfNeeded(force: true)
-                }
-        } else {
-            ScrollViewReader { proxy in
-                GeometryReader { viewport in
-                    let contentWidth = timelineContentWidth(for: viewport.size.width)
-                    ScrollView(.vertical) {
-                        TurnTimelineRowsSection(
-                            shouldWarmRecentTailProgressively: shouldWarmRecentTailProgressively,
-                            hasEarlierMessages: hasEarlierMessages,
-                            isLoadingEarlierMessages: isInitialEarlierPageLoading
-                                || isLoadingRemoteEarlierMessages
-                                || isRemoteEarlierLoadPending
-                                || isLocalEarlierRevealPending
-                                || isRetryingEarlierHistoryLoad,
-                            earlierMessagesErrorMessage: olderHistoryLoadErrorMessage,
-                            renderItems: visibleRenderItems,
-                            isRetryAvailable: isRetryAvailable,
-                            cachedBlockInfoByMessageID: cachedBlockInfoByMessageID,
-                            planSessionSource: planSessionSource,
-                            allowsAssistantPlanFallbackRecovery: allowsAssistantPlanFallbackRecovery,
-                            completedTurnIDs: completedTurnIDs,
-                            threadMessagesForPlanMatching: threadMessagesForPlanMatching,
-                            currentWorkingDirectory: currentWorkingDirectory,
-                            planMatchingFingerprint: planMatchingFingerprint,
-                            newestStreamingMessageID: cachedNewestStreamingMessageID,
-                            autoScrollMode: autoScrollMode,
-                            onRetryUserMessage: onRetryUserMessage,
-                            onTapAssistantRevert: onTapAssistantRevert,
-                            onTapSubagent: onTapSubagent,
-                            onLoadEarlierMessages: handleLoadEarlierMessages
-                        )
-                        // SwiftUI can otherwise let a streaming text row report an
-                        // over-wide ideal size, which makes the vertical timeline pan sideways.
-                        .frame(width: contentWidth, alignment: .leading)
-                        .padding(.horizontal, timelineHorizontalPadding)
-                        .frame(width: viewport.size.width, alignment: .leading)
-                        .clipped()
-                        .background(VerticalScrollAxisGuard())
-                        .padding(.top, 12)
-                        .padding(.bottom, 12)
+    private var isShowingEmptyTimeline: Bool {
+        messages.isEmpty
+            && !hasEarlierMessages
+            && olderHistoryLoadErrorMessage == nil
+            && !isLoadingRemoteEarlierMessages
+    }
 
-                        // Keep bottom anchor outside the message stack so it is always
-                        // reachable by scrollTo regardless of VStack layout timing.
-                        Color.clear
-                            .frame(width: contentWidth, height: 1)
-                            .padding(.horizontal, timelineHorizontalPadding)
-                            .frame(width: viewport.size.width, alignment: .leading)
-                            .clipped()
-                            .id(scrollBottomAnchorID)
-                            .allowsHitTesting(false)
-                    }
-                    .accessibilityIdentifier("turn.timeline.scrollview")
-                    .background(Color(.systemBackground))
-                    .overlay {
-                        if shouldShowFullTimelineLoader {
-                            timelineLoadingOverlay
-                        }
-                    }
-                    .frame(width: viewport.size.width)
-                    .defaultScrollAnchor(.bottom, for: .initialOffset)
-                    .defaultScrollAnchor(.top, for: .sizeChanges)
-                    .scrollDismissesKeyboard(.interactively)
-                    .simultaneousGesture(
-                        TapGesture().onEnded {
-                            onTapOutsideComposer()
-                        }
-                    )
-                    // Track real scroll phases instead of layering a competing drag gesture on top.
-	                    .onScrollPhaseChange { oldPhase, newPhase in
-	                        debugTimelineLog("scroll phase changed old=\(String(describing: oldPhase)) new=\(String(describing: newPhase))")
-	                        handleScrollPhaseChange(from: oldPhase, to: newPhase)
-	                    }
-	                    .onScrollGeometryChange(for: ScrollBottomGeometry.self) { geometry in
-	                        ScrollBottomGeometry.from(geometry)
-	                    } action: { old, new in
-                        guard !isEarlierHistoryInteractionActive else { return }
-                        // Coalesce into a single commit per display-frame window so SwiftUI
-                        // does not receive several geometry-driven state mutations per frame.
-                        scrollGeometryCoalescer.record(old: old, new: new)
-                        guard scrollGeometryCoalescer.applyTask == nil else { return }
-                        debugTimelineLog("geometry change scheduled for frame coalesced apply")
-                        scrollGeometryCoalescer.applyTask = Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: Self.scrollGeometryCoalescingDelayNanoseconds)
-                            scrollGeometryCoalescer.applyTask = nil
-                            guard let pending = scrollGeometryCoalescer.pending else { return }
-                            scrollGeometryCoalescer.pending = nil
-                            guard !Task.isCancelled else { return }
-                            guard !isEarlierHistoryInteractionActive else { return }
-                            applyScrollGeometryUpdate(
-                                old: pending.old,
-                                new: pending.new,
-                                using: proxy
-                            )
-                        }
-                    }
-                    // Timeline mutations still drive block-info refresh and assistant anchoring,
-                    // but geometry decides when follow-bottom should actually fire.
-                    .onChange(of: timelineChangeToken) { _, _ in
-                        debugTimelineLog(
-                            "timelineChangeToken changed token=\(timelineChangeToken) "
-                                + "messageCount=\(messages.count) visibleTail=\(visibleTailCount)"
-                        )
-                        recomputeRenderItemsIfNeeded()
-                        recomputeBlockInfoIfNeeded()
-                        scheduleProgressiveTailRevealIfNeeded()
-                        handleTimelineMutation(using: proxy)
-                    }
-                    .onChange(of: messages.count) { oldCount, newCount in
-                        handleMessageCountChange(oldCount: oldCount, newCount: newCount)
-                    }
-                    .onChange(of: isLoadingRemoteEarlierMessages) { _, newValue in
-                        handleRemoteEarlierLoadingChange(isLoading: newValue)
-                    }
-                    .onChange(of: hasRemoteEarlierMessages) { _, newValue in
-                        if !newValue {
-                            pendingRemoteEarlierLoadMessageCount = nil
-                        }
-                    }
-                    .onChange(of: olderHistoryLoadErrorMessage) { _, newValue in
-                        if newValue != nil {
-                            pendingRemoteEarlierLoadMessageCount = nil
-                        }
-                    }
-                    .onChange(of: isThreadRunning) { _, _ in
-                        debugTimelineLog("isThreadRunning changed value=\(isThreadRunning)")
-                        recomputeBlockInfoIfNeeded()
-                    }
-                    .onChange(of: threadID) { _, _ in
-                        debugTimelineLog("threadID changed to=\(threadID)")
-                        beginScrollSessionIfNeeded(force: true)
-                        recomputeRenderItemsIfNeeded()
-                        recomputeBlockInfoIfNeeded()
-                        scheduleProgressiveTailRevealIfNeeded()
-                        handleTimelineMutation(using: proxy)
-                    }
-                    .onChange(of: activeTurnID) { _, _ in
-                        debugTimelineLog("activeTurnID changed to=\(activeTurnID ?? "nil")")
-                        recomputeBlockInfoIfNeeded()
-                        handleTimelineMutation(using: proxy)
-                    }
-                    .onChange(of: latestTurnTerminalState) { _, _ in
-                        debugTimelineLog("latestTurnTerminalState changed to=\(String(describing: latestTurnTerminalState))")
-                        recomputeBlockInfoIfNeeded()
-                    }
-                    .onChange(of: completedTurnIDs) { _, _ in
-                        debugTimelineLog("completedTurnIDs changed count=\(completedTurnIDs.count)")
-                        recomputeRenderItemsIfNeeded()
-                        recomputeBlockInfoIfNeeded()
-                    }
-                    .onChange(of: stoppedTurnIDs) { _, _ in
-                        debugTimelineLog("stoppedTurnIDs changed count=\(stoppedTurnIDs.count)")
-                        recomputeBlockInfoIfNeeded()
-                    }
-                    .onChange(of: visibleTailCount) { _, _ in
-                        debugTimelineLog("visibleTailCount changed value=\(visibleTailCount) totalMessages=\(messages.count)")
-                        recomputeRenderItemsIfNeeded()
-                        recomputeBlockInfoIfNeeded()
-                    }
-                    .onChange(of: shouldAnchorToAssistantResponse) { _, newValue in
-                        if newValue {
-                            autoScrollMode = .anchorAssistantResponse
-                            handleTimelineMutation(using: proxy)
-                        } else if autoScrollMode == .anchorAssistantResponse {
-                            autoScrollMode = isScrolledToBottom ? .followBottom : .manual
-                        }
-                    }
-                    // Keeps footer pinned to bottom without adding a solid spacer block above it.
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        footer(scrollToBottomAction: {
-                            handleScrollToLatestButtonTap(using: proxy)
-                        })
-                    }
-                    .onAppear {
-                        debugTimelineLog("onAppear threadID=\(threadID) messageCount=\(messages.count)")
-                        beginScrollSessionIfNeeded()
-                        recomputeRenderItemsIfNeeded()
-                        recomputeBlockInfoIfNeeded()
-                        scheduleProgressiveTailRevealIfNeeded()
-                        handleTimelineMutation(using: proxy)
-                    }
-                    .onDisappear {
-                        debugTimelineLog("onDisappear threadID=\(threadID)")
-                        cancelScrollTasks()
-                    }
+    private var isLoadingEarlierMessages: Bool {
+        isInitialEarlierPageLoading
+            || isLoadingRemoteEarlierMessages
+            || isRemoteEarlierLoadPending
+            || isLocalEarlierRevealPending
+            || isRetryingEarlierHistoryLoad
+    }
+
+    var body: some View {
+        if isShowingEmptyTimeline {
+            emptyTimelineContent
+        } else {
+            timelineReader
+        }
+    }
+
+    // Keep new/empty chats static to avoid scroll indicators and inert scrolling.
+    private var emptyTimelineContent: some View {
+        emptyTimelineState
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onTapOutsideComposer()
+            }
+            .simultaneousGesture(emptyStateKeyboardDismissGesture)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                footer()
+            }
+            .onAppear {
+                beginScrollSessionIfNeeded()
+            }
+            .onChange(of: threadID) { _, _ in
+                beginScrollSessionIfNeeded(force: true)
+            }
+    }
+
+    private var timelineReader: some View {
+        ScrollViewReader { proxy in
+            GeometryReader { viewport in
+                timelineViewport(proxy: proxy, viewport: viewport)
+            }
+        }
+    }
+
+    private func timelineViewport(proxy: ScrollViewProxy, viewport: GeometryProxy) -> some View {
+        let viewportWidth = viewport.size.width
+        let contentWidth = timelineContentWidth(for: viewportWidth)
+        let scrollView = timelineScrollView(
+            contentWidth: contentWidth,
+            viewportWidth: viewportWidth
+        )
+        let scrollHandlers = attachScrollHandlers(
+            to: scrollView,
+            proxy: proxy,
+            viewportWidth: viewportWidth
+        )
+        let changeHandlers = attachTimelineChangeHandlers(to: scrollHandlers, proxy: proxy)
+        return attachTimelineLifecycle(to: changeHandlers, proxy: proxy)
+    }
+
+    private func timelineScrollView(contentWidth: CGFloat, viewportWidth: CGFloat) -> some View {
+        ScrollView(.vertical) {
+            timelineRowsSection(contentWidth: contentWidth, viewportWidth: viewportWidth)
+            bottomScrollAnchor(contentWidth: contentWidth, viewportWidth: viewportWidth)
+        }
+    }
+
+    private func timelineRowsSection(contentWidth: CGFloat, viewportWidth: CGFloat) -> some View {
+        TurnTimelineRowsSection(
+            shouldWarmRecentTailProgressively: shouldWarmRecentTailProgressively,
+            hasEarlierMessages: hasEarlierMessages,
+            isLoadingEarlierMessages: isLoadingEarlierMessages,
+            earlierMessagesErrorMessage: olderHistoryLoadErrorMessage,
+            renderItems: visibleRenderItems,
+            isRetryAvailable: isRetryAvailable,
+            cachedBlockInfoByMessageID: cachedBlockInfoByMessageID,
+            planSessionSource: planSessionSource,
+            allowsAssistantPlanFallbackRecovery: allowsAssistantPlanFallbackRecovery,
+            completedTurnIDs: completedTurnIDs,
+            threadMessagesForPlanMatching: threadMessagesForPlanMatching,
+            currentWorkingDirectory: currentWorkingDirectory,
+            planMatchingFingerprint: planMatchingFingerprint,
+            newestStreamingMessageID: cachedNewestStreamingMessageID,
+            autoScrollMode: autoScrollMode,
+            onRetryUserMessage: onRetryUserMessage,
+            onTapAssistantRevert: onTapAssistantRevert,
+            onTapSubagent: onTapSubagent,
+            onLoadEarlierMessages: handleLoadEarlierMessages
+        )
+        // SwiftUI can otherwise let a streaming text row report an over-wide ideal
+        // size, which makes the vertical timeline pan sideways.
+        .frame(width: contentWidth, alignment: .leading)
+        .padding(.horizontal, timelineHorizontalPadding)
+        .frame(width: viewportWidth, alignment: .leading)
+        .clipped()
+        .background(VerticalScrollAxisGuard())
+        .padding(.top, 12)
+        .padding(.bottom, 12)
+    }
+
+    private func bottomScrollAnchor(contentWidth: CGFloat, viewportWidth: CGFloat) -> some View {
+        // Keep bottom anchor outside the message stack so it is always reachable by
+        // scrollTo regardless of VStack layout timing.
+        Color.clear
+            .frame(width: contentWidth, height: 1)
+            .padding(.horizontal, timelineHorizontalPadding)
+            .frame(width: viewportWidth, alignment: .leading)
+            .clipped()
+            .id(scrollBottomAnchorID)
+            .allowsHitTesting(false)
+    }
+
+    private func attachScrollHandlers<Content: View>(
+        to content: Content,
+        proxy: ScrollViewProxy,
+        viewportWidth: CGFloat
+    ) -> some View {
+        content
+            .accessibilityIdentifier("turn.timeline.scrollview")
+            .background(Color(.systemBackground))
+            .overlay {
+                if shouldShowFullTimelineLoader {
+                    timelineLoadingOverlay
                 }
             }
+            .frame(width: viewportWidth)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.top, for: .sizeChanges)
+            .scrollDismissesKeyboard(.interactively)
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    onTapOutsideComposer()
+                }
+            )
+            // Track real scroll phases instead of layering a competing drag gesture on top.
+            .onScrollPhaseChange { oldPhase, newPhase in
+                debugTimelineLog("scroll phase changed old=\(String(describing: oldPhase)) new=\(String(describing: newPhase))")
+                handleScrollPhaseChange(from: oldPhase, to: newPhase)
+            }
+            .onScrollGeometryChange(for: ScrollBottomGeometry.self) { geometry in
+                ScrollBottomGeometry.from(geometry)
+            } action: { old, new in
+                handleScrollGeometryChange(old: old, new: new, using: proxy)
+            }
+    }
+
+    private func attachTimelineChangeHandlers<Content: View>(
+        to content: Content,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        content
+            // Timeline mutations still drive block-info refresh and assistant anchoring,
+            // but geometry decides when follow-bottom should actually fire.
+            .onChange(of: timelineChangeToken) { _, _ in
+                debugTimelineLog(
+                    "timelineChangeToken changed token=\(timelineChangeToken) "
+                        + "messageCount=\(messages.count) visibleTail=\(visibleTailCount)"
+                )
+                recomputeRenderItemsIfNeeded()
+                recomputeBlockInfoIfNeeded()
+                scheduleProgressiveTailRevealIfNeeded()
+                handleTimelineMutation(using: proxy)
+            }
+            .onChange(of: messages.count) { oldCount, newCount in
+                handleMessageCountChange(oldCount: oldCount, newCount: newCount)
+            }
+            .onChange(of: isLoadingRemoteEarlierMessages) { _, newValue in
+                handleRemoteEarlierLoadingChange(isLoading: newValue)
+            }
+            .onChange(of: hasRemoteEarlierMessages) { _, newValue in
+                if !newValue {
+                    pendingRemoteEarlierLoadMessageCount = nil
+                }
+            }
+            .onChange(of: olderHistoryLoadErrorMessage) { _, newValue in
+                if newValue != nil {
+                    pendingRemoteEarlierLoadMessageCount = nil
+                }
+            }
+            .onChange(of: isThreadRunning) { _, _ in
+                debugTimelineLog("isThreadRunning changed value=\(isThreadRunning)")
+                recomputeBlockInfoIfNeeded()
+            }
+            .onChange(of: threadID) { _, _ in
+                debugTimelineLog("threadID changed to=\(threadID)")
+                beginScrollSessionIfNeeded(force: true)
+                recomputeRenderItemsIfNeeded()
+                recomputeBlockInfoIfNeeded()
+                scheduleProgressiveTailRevealIfNeeded()
+                handleTimelineMutation(using: proxy)
+            }
+            .onChange(of: activeTurnID) { _, _ in
+                debugTimelineLog("activeTurnID changed to=\(activeTurnID ?? "nil")")
+                recomputeBlockInfoIfNeeded()
+                handleTimelineMutation(using: proxy)
+            }
+            .onChange(of: latestTurnTerminalState) { _, _ in
+                debugTimelineLog("latestTurnTerminalState changed to=\(String(describing: latestTurnTerminalState))")
+                recomputeBlockInfoIfNeeded()
+            }
+            .onChange(of: completedTurnIDs) { _, _ in
+                debugTimelineLog("completedTurnIDs changed count=\(completedTurnIDs.count)")
+                recomputeRenderItemsIfNeeded()
+                recomputeBlockInfoIfNeeded()
+            }
+            .onChange(of: stoppedTurnIDs) { _, _ in
+                debugTimelineLog("stoppedTurnIDs changed count=\(stoppedTurnIDs.count)")
+                recomputeBlockInfoIfNeeded()
+            }
+            .onChange(of: visibleTailCount) { _, _ in
+                debugTimelineLog("visibleTailCount changed value=\(visibleTailCount) totalMessages=\(messages.count)")
+                recomputeRenderItemsIfNeeded()
+                recomputeBlockInfoIfNeeded()
+            }
+            .onChange(of: shouldAnchorToAssistantResponse) { _, newValue in
+                if newValue {
+                    autoScrollMode = .anchorAssistantResponse
+                    handleTimelineMutation(using: proxy)
+                } else if autoScrollMode == .anchorAssistantResponse {
+                    autoScrollMode = isScrolledToBottom ? .followBottom : .manual
+                }
+            }
+    }
+
+    private func attachTimelineLifecycle<Content: View>(
+        to content: Content,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        content
+            // Keeps footer pinned to bottom without adding a solid spacer block above it.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                footer(scrollToBottomAction: {
+                    handleScrollToLatestButtonTap(using: proxy)
+                })
+            }
+            .onAppear {
+                debugTimelineLog("onAppear threadID=\(threadID) messageCount=\(messages.count)")
+                beginScrollSessionIfNeeded()
+                recomputeRenderItemsIfNeeded()
+                recomputeBlockInfoIfNeeded()
+                scheduleProgressiveTailRevealIfNeeded()
+                handleTimelineMutation(using: proxy)
+            }
+            .onDisappear {
+                debugTimelineLog("onDisappear threadID=\(threadID)")
+                cancelScrollTasks()
+            }
+    }
+
+    private func handleScrollGeometryChange(
+        old: ScrollBottomGeometry,
+        new: ScrollBottomGeometry,
+        using proxy: ScrollViewProxy
+    ) {
+        guard !isEarlierHistoryInteractionActive else { return }
+        // Coalesce into a single commit per display-frame window so SwiftUI
+        // does not receive several geometry-driven state mutations per frame.
+        scrollGeometryCoalescer.record(old: old, new: new)
+        guard scrollGeometryCoalescer.applyTask == nil else { return }
+        debugTimelineLog("geometry change scheduled for frame coalesced apply")
+        scrollGeometryCoalescer.applyTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.scrollGeometryCoalescingDelayNanoseconds)
+            scrollGeometryCoalescer.applyTask = nil
+            guard let pending = scrollGeometryCoalescer.pending else { return }
+            scrollGeometryCoalescer.pending = nil
+            guard !Task.isCancelled else { return }
+            guard !isEarlierHistoryInteractionActive else { return }
+            applyScrollGeometryUpdate(
+                old: pending.old,
+                new: pending.new,
+                using: proxy
+            )
         }
     }
 
