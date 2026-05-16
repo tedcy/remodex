@@ -166,6 +166,7 @@ function startBridge({
   const bridgeManagedCodexRequestWaiters = new Map();
   const forwardedRequestMethodsById = new Map();
   const relaySanitizedResponseMethodsById = new Map();
+  const forwardedRequestDiagnosticsById = new Map();
   const trackedForwardedRequestMethods = new Set([
     "account/login/start",
     "account/login/cancel",
@@ -424,9 +425,15 @@ function startBridge({
       markRelayActivity();
     });
 
-    nextSocket.on("close", (code) => {
+    nextSocket.on("close", (code, reason) => {
       if (socket === nextSocket) {
         clearRelayWatchdog();
+      }
+      const reasonText = reason ? reason.toString("utf8") : "";
+      if (!isShuttingDown) {
+        console.warn(
+          `[remodex] relay socket closed: code=${code || "unknown"} reason=${reasonText || "none"}`
+        );
       }
       logConnectionStatus("disconnected");
       if (socket === nextSocket) {
@@ -439,9 +446,12 @@ function startBridge({
       scheduleRelayReconnect(code);
     });
 
-    nextSocket.on("error", () => {
+    nextSocket.on("error", (error) => {
       if (socket === nextSocket) {
         clearRelayWatchdog();
+      }
+      if (!isShuttingDown) {
+        console.error(`[remodex] relay socket error: ${error?.message || error}`);
       }
       logConnectionStatus("disconnected");
     });
@@ -463,6 +473,7 @@ function startBridge({
     if (handleBridgeManagedCodexResponse(message)) {
       return;
     }
+    logForwardedCodexResponse(message);
     updatePendingAuthLoginFromCodexMessage(message);
     trackCodexHandshakeState(message);
     desktopRefresher.handleOutbound(message);
@@ -474,14 +485,14 @@ function startBridge({
     );
   });
 
-  codex.onClose(() => {
+  codex.onClose((code, signal) => {
     const wasShuttingDown = isShuttingDown;
     clearRelayWatchdog();
     bridgeStatusPublisher.stopHeartbeat();
     logConnectionStatus("disconnected");
     const lastError = wasShuttingDown
       ? ""
-      : "Codex transport closed unexpectedly.";
+      : `Codex transport closed unexpectedly${formatCloseDetails(code, signal)}.`;
     publishBridgeStatus({
       state: wasShuttingDown ? "stopped" : "error",
       connectionStatus: "disconnected",
@@ -501,6 +512,7 @@ function startBridge({
     desktopRefresher.handleTransportReset();
     failBridgeManagedCodexRequests(new Error("Codex transport closed before the bridge request completed."));
     forwardedRequestMethodsById.clear();
+    forwardedRequestDiagnosticsById.clear();
     if (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) {
       socket.close();
     }
@@ -571,6 +583,7 @@ function startBridge({
     }
     const codexRequest = disableUnsupportedReasoningSummaryForTurnStart(rawMessage);
     rememberForwardedRequestMethod(rawMessage);
+    rememberForwardedRequestDiagnostic(codexRequest);
     rememberThreadFromMessage("phone", codexRequest);
     codex.send(codexRequest);
   }
@@ -910,6 +923,54 @@ function startBridge({
         relaySanitizedResponseMethodsById.delete(requestId);
       }
     }
+    for (const [requestId, trackedRequest] of forwardedRequestDiagnosticsById.entries()) {
+      if (!trackedRequest || (now - trackedRequest.createdAt) >= forwardedRequestMethodTTLms) {
+        forwardedRequestDiagnosticsById.delete(requestId);
+      }
+    }
+  }
+
+  function rememberForwardedRequestDiagnostic(rawMessage) {
+    const parsed = safeParseJSON(rawMessage);
+    const method = typeof parsed?.method === "string" ? parsed.method.trim() : "";
+    const requestId = parsed?.id;
+    if (!method || requestId == null || !shouldLogForwardedCodexMethod(method)) {
+      return;
+    }
+
+    forwardedRequestDiagnosticsById.set(String(requestId), {
+      method,
+      createdAt: Date.now(),
+    });
+    console.log(`[remodex] phone -> codex method=${method} id=${String(requestId)}`);
+  }
+
+  function logForwardedCodexResponse(rawMessage) {
+    const parsed = safeParseJSON(rawMessage);
+    const responseId = parsed?.id;
+    if (responseId == null) {
+      return;
+    }
+
+    const trackedRequest = forwardedRequestDiagnosticsById.get(String(responseId));
+    if (!trackedRequest) {
+      return;
+    }
+
+    forwardedRequestDiagnosticsById.delete(String(responseId));
+    console.log(
+      `[remodex] codex -> phone method=${trackedRequest.method} id=${String(responseId)} hasError=${parsed?.error != null}`
+    );
+  }
+
+  function shouldLogForwardedCodexMethod(method) {
+    return method === "initialize"
+      || method === "thread/list"
+      || method === "thread/read"
+      || method === "thread/resume"
+      || method === "thread/start"
+      || method === "turn/start"
+      || method === "model/list";
   }
 
   function safeParseJSON(value) {
@@ -1367,6 +1428,17 @@ function buildMacRegistrationHeaders(deviceState, pairingSession) {
     headers["x-trusted-phone-public-key"] = registration.trustedPhonePublicKey;
   }
   return headers;
+}
+
+function formatCloseDetails(code, signal) {
+  const details = [];
+  if (code !== undefined && code !== null) {
+    details.push(`code=${code}`);
+  }
+  if (signal) {
+    details.push(`signal=${signal}`);
+  }
+  return details.length ? ` (${details.join(", ")})` : "";
 }
 
 function buildMacRegistration(deviceState, pairingSession) {
