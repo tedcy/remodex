@@ -98,9 +98,13 @@ extension CodexService {
 
         let requestKey = idKey(from: responseID)
         guard let continuation = pendingRequests.removeValue(forKey: requestKey) else {
+            logConnectionDiagnostic("rpc response ignored id=\(requestKey) pending=\(pendingRequests.count)")
             return
         }
 
+        logConnectionDiagnostic(
+            "rpc response received id=\(requestKey) hasError=\(message.error != nil) pendingAfter=\(pendingRequests.count)"
+        )
         if let rpcError = message.error {
             continuation.resume(throwing: CodexServiceError.rpcError(rpcError))
         } else {

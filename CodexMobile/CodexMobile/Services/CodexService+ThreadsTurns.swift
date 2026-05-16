@@ -12,7 +12,7 @@ private enum ThreadTurnStateSnapshotPolicy {
 }
 
 private enum ThreadListHydrationPolicy {
-    static let requestTimeoutNanoseconds: UInt64 = 12_000_000_000
+    static let requestTimeoutNanoseconds: UInt64 = 30_000_000_000
 }
 
 extension CodexService {
@@ -1640,6 +1640,10 @@ extension CodexService {
     // Returns nil for internal/transient runtime noise that should not occupy the red footer.
     func userFacingTurnErrorMessageForFooter(from error: Error) -> String? {
         if isCancellationLikeError(error) || shouldSuppressRuntimeErrorInChat(error) {
+            return nil
+        }
+        if isConnected && isInitialized && isBenignBackgroundDisconnect(error) {
+            debugRuntimeLog("suppressed stale disconnected footer while connected: \(error.localizedDescription)")
             return nil
         }
 

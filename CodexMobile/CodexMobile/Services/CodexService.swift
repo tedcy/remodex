@@ -374,7 +374,19 @@ final class CodexService {
     // Ordered pending runtime approvals keyed by request id so concurrent prompts do not overwrite each other.
     var pendingApprovals: [CodexApprovalRequest] = []
     var lastRawMessage: String?
-    var lastErrorMessage: String?
+    var lastErrorMessage: String? {
+        didSet {
+            let oldValue = oldValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newValue = lastErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard oldValue != newValue else { return }
+            logConnectionDiagnostic("lastErrorMessage=\(newValue?.isEmpty == false ? newValue ?? "" : "nil")")
+            if newValue == "Connection was interrupted. Tap Reconnect to try again." {
+                for symbol in Thread.callStackSymbols.prefix(14) {
+                    logConnectionDiagnostic("lastErrorMessage stack: \(symbol)")
+                }
+            }
+        }
+    }
     var keepMacAwakeWhileBridgeRuns = false
     var runtimeDebugLogEntries: [String] = []
     var connectionRecoveryState: CodexConnectionRecoveryState = .idle
@@ -552,6 +564,9 @@ final class CodexService {
     var threadListSyncTask: Task<Void, Never>?
     var activeThreadSyncTask: Task<Void, Never>?
     var runningThreadWatchSyncTask: Task<Void, Never>?
+    // Coalesces startup/foreground sidebar refreshes so slow runtimes do not receive duplicate thread/list RPCs.
+    @ObservationIgnored var threadListSyncInFlightTask: Task<([CodexThread], [CodexThread]), Error>?
+    @ObservationIgnored var threadListSyncInFlightID: UUID?
     var postConnectSyncTask: Task<Void, Never>?
     // Keeps the phone-side account UI in sync while ChatGPT login is being completed on the Mac.
     var gptAccountLoginSyncTask: Task<Void, Never>?

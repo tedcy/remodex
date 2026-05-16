@@ -116,6 +116,19 @@ nonisolated private func codexLogPairingTransport(_ message: String) {
 }
 
 extension CodexService {
+    func logConnectionDiagnostic(_ message: String) {
+        codexLogPairingTransport(message)
+    }
+
+    func connectionDiagnosticDescription(for error: Error) -> String {
+        if let nwError = error as? NWError {
+            return "NWError(\(nwError))"
+        }
+
+        let nsError = error as NSError
+        return "\(type(of: error))(domain=\(nsError.domain), code=\(nsError.code), message=\(error.localizedDescription))"
+    }
+
     // Rejects oversized relay frames before Network.framework turns them into a raw EMSGSIZE failure.
     func validateOutgoingWebSocketMessageSize(_ text: String) throws {
         let payloadSize = Data(text.utf8).count
@@ -139,6 +152,9 @@ extension CodexService {
         }
 
         guard isConnected, webSocketConnection != nil || webSocketTask != nil else {
+            logConnectionDiagnostic(
+                "rpc request skipped method=\(method) connected=\(isConnected) initialized=\(isInitialized) hasNW=\(webSocketConnection != nil) hasTask=\(webSocketTask != nil) pending=\(pendingRequests.count)"
+            )
             throw CodexServiceError.disconnected
         }
 
@@ -163,6 +179,9 @@ extension CodexService {
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                logConnectionDiagnostic(
+                    "rpc request start method=\(method) id=\(requestKey) connected=\(isConnected) initialized=\(isInitialized) pendingBefore=\(pendingRequests.count)"
+                )
                 pendingRequests[requestKey] = continuation
                 scheduleRequestTimeoutIfNeeded(
                     requestKey: requestKey,
@@ -175,6 +194,9 @@ extension CodexService {
                     do {
                         try await sendMessage(request)
                     } catch {
+                        logConnectionDiagnostic(
+                            "rpc request send failed method=\(method) id=\(requestKey) error=\(connectionDiagnosticDescription(for: error))"
+                        )
                         if shouldTreatSendFailureAsDisconnect(error) {
                             handleReceiveError(error)
                             return
@@ -217,6 +239,9 @@ extension CodexService {
                 return
             }
             let message = timeoutMessage ?? "\(method) timed out while loading this chat."
+            self.logConnectionDiagnostic(
+                "rpc request timeout method=\(method) id=\(requestKey) pending=\(self.pendingRequests.count) connected=\(self.isConnected) initialized=\(self.isInitialized)"
+            )
             continuation.resume(
                 throwing: CodexServiceError.invalidInput(message)
             )
@@ -268,12 +293,22 @@ extension CodexService {
             guard let connection = webSocketConnection else {
                 throw CodexServiceError.disconnected
             }
-            try await sendManualWebSocketFrame(opcode: 0x1, payload: Data(text.utf8), on: connection)
+            do {
+                try await sendManualWebSocketFrame(opcode: 0x1, payload: Data(text.utf8), on: connection)
+            } catch {
+                logConnectionDiagnostic("send failed transport=manualTCP error=\(connectionDiagnosticDescription(for: error))")
+                throw error
+            }
             return
         }
 
         if let task = webSocketTask {
-            try await task.send(.string(text))
+            do {
+                try await task.send(.string(text))
+            } catch {
+                logConnectionDiagnostic("send failed transport=URLSessionWebSocketTask closeCode=\(task.closeCode.rawValue) error=\(connectionDiagnosticDescription(for: error))")
+                throw error
+            }
             return
         }
 
@@ -285,19 +320,24 @@ extension CodexService {
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "codex-jsonrpc", metadata: [metadata])
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(
-                content: payload,
-                contentContext: context,
-                isComplete: true,
-                completion: .contentProcessed { error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(returning: ())
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                connection.send(
+                    content: payload,
+                    contentContext: context,
+                    isComplete: true,
+                    completion: .contentProcessed { error in
+                        if let error {
+                            continuation.resume(throwing: error)
+                        } else {
+                            continuation.resume(returning: ())
+                        }
                     }
-                }
-            )
+                )
+            }
+        } catch {
+            logConnectionDiagnostic("send failed transport=NWConnection error=\(connectionDiagnosticDescription(for: error))")
+            throw error
         }
     }
 
@@ -327,12 +367,16 @@ extension CodexService {
                 guard self.webSocketConnection === connection else { return }
 
                 if let error {
+                    self.logConnectionDiagnostic("receive failed transport=NWConnection error=\(self.connectionDiagnosticDescription(for: error))")
                     self.handleReceiveError(error)
                     return
                 }
 
                 if let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata,
                    metadata.opcode == .close {
+                    self.logConnectionDiagnostic(
+                        "receive close transport=NWConnection closeCode=\(self.relayCloseCodeRawValue(metadata.closeCode).map(String.init) ?? "nil")"
+                    )
                     self.handleReceiveError(
                         CodexServiceError.disconnected,
                         relayCloseCode: metadata.closeCode
@@ -364,8 +408,10 @@ extension CodexService {
 
                 switch result {
                 case .failure(let error):
+                    self.logConnectionDiagnostic("receive failed transport=manualTCP error=\(self.connectionDiagnosticDescription(for: error))")
                     self.handleReceiveError(error)
                 case .success(nil):
+                    self.logConnectionDiagnostic("receive EOF transport=manualTCP")
                     self.handleReceiveError(CodexServiceError.disconnected)
                 case .success(let data?):
                     if !data.isEmpty {
@@ -376,6 +422,7 @@ extension CodexService {
                                 return
                             }
                         } catch {
+                            self.logConnectionDiagnostic("manual websocket frame handling failed error=\(self.connectionDiagnosticDescription(for: error))")
                             self.handleReceiveError(error)
                             return
                         }
@@ -417,6 +464,9 @@ extension CodexService {
 
                 switch result {
                 case .failure(let error):
+                    self.logConnectionDiagnostic(
+                        "receive failed transport=URLSessionWebSocketTask closeCode=\(task.closeCode.rawValue) error=\(self.connectionDiagnosticDescription(for: error))"
+                    )
                     self.handleReceiveError(
                         error,
                         relayCloseCode: self.relayCloseCode(for: task.closeCode)
@@ -491,9 +541,11 @@ extension CodexService {
 
                 switch state {
                 case .failed(let error):
+                    self.logConnectionDiagnostic("state failed transport=manualTCP error=\(self.connectionDiagnosticDescription(for: error))")
                     self.handleReceiveError(error)
                 case .cancelled:
                     if self.isConnected {
+                        self.logConnectionDiagnostic("state cancelled transport=manualTCP")
                         self.handleReceiveError(CodexServiceError.disconnected)
                     }
                 default:
@@ -549,9 +601,11 @@ extension CodexService {
 
                 switch state {
                 case .failed(let error):
+                    self.logConnectionDiagnostic("state failed transport=NWConnection error=\(self.connectionDiagnosticDescription(for: error))")
                     self.handleReceiveError(error)
                 case .cancelled:
                     if self.isConnected {
+                        self.logConnectionDiagnostic("state cancelled transport=NWConnection")
                         self.handleReceiveError(CodexServiceError.disconnected)
                     }
                 default:
@@ -621,6 +675,12 @@ extension CodexService {
     func failAllPendingRequests(with error: Error) {
         let continuations = pendingRequests
         pendingRequests.removeAll()
+
+        if !continuations.isEmpty {
+            logConnectionDiagnostic(
+                "failing pending rpc requests count=\(continuations.count) error=\(connectionDiagnosticDescription(for: error))"
+            )
+        }
 
         for continuation in continuations.values {
             continuation.resume(throwing: error)
@@ -840,6 +900,9 @@ extension CodexService {
                     processIncomingWireText(text)
                 }
             case 0x8:
+                logConnectionDiagnostic(
+                    "receive close transport=manualTCP closeCode=\(relayCloseCodeRawValue(relayCloseCode(fromManualWebSocketClosePayload: frame.payload)).map(String.init) ?? "nil")"
+                )
                 handleReceiveError(
                     CodexServiceError.disconnected,
                     relayCloseCode: relayCloseCode(fromManualWebSocketClosePayload: frame.payload)

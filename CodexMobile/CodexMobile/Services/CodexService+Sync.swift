@@ -155,21 +155,53 @@ extension CodexService {
             return
         }
 
-        do {
-            // Poll recent metadata only; listThreads() uses the same cap during reconnect/refresh.
-            let activeThreads = try await fetchServerThreads(limit: recentActiveThreadListLimit)
+        let (task, taskID, createdTask): (Task<([CodexThread], [CodexThread]), Error>, UUID?, Bool)
+        if let existingTask = threadListSyncInFlightTask {
+            logConnectionDiagnostic("syncThreadsList coalesced with in-flight thread/list")
+            task = existingTask
+            taskID = nil
+            createdTask = false
+        } else {
+            let nextTaskID = UUID()
+            task = Task { @MainActor [weak self] in
+                guard let self, self.isConnected, self.isInitialized else {
+                    throw CodexServiceError.disconnected
+                }
 
-            // Also fetch server-archived threads so they survive app restarts.
-            var archivedThreads: [CodexThread] = []
-            do {
-                archivedThreads = try await fetchServerThreads(limit: recentArchivedThreadListLimit, archived: true)
-            } catch {
-                debugSyncLog("thread/list archived fetch failed (non-fatal): \(error.localizedDescription)")
+                // Poll recent metadata only; listThreads() uses the same cap during reconnect/refresh.
+                let activeThreads = try await self.fetchServerThreads(limit: self.recentActiveThreadListLimit)
+
+                // Also fetch server-archived threads so they survive app restarts.
+                var archivedThreads: [CodexThread] = []
+                do {
+                    archivedThreads = try await self.fetchServerThreads(limit: self.recentArchivedThreadListLimit, archived: true)
+                } catch {
+                    self.debugSyncLog("thread/list archived fetch failed (non-fatal): \(error.localizedDescription)")
+                }
+
+                return (activeThreads, archivedThreads)
             }
+            threadListSyncInFlightTask = task
+            threadListSyncInFlightID = nextTaskID
+            taskID = nextTaskID
+            createdTask = true
+        }
 
+        defer {
+            if createdTask, threadListSyncInFlightID == taskID {
+                threadListSyncInFlightTask = nil
+                threadListSyncInFlightID = nil
+            }
+        }
+
+        do {
+            let (activeThreads, archivedThreads) = try await task.value
             reconcileLocalThreadsWithServer(activeThreads, serverArchivedThreads: archivedThreads)
             debugSyncLog("sync thread/list active=\(activeThreads.count) archived=\(archivedThreads.count) local=\(threads.count)")
         } catch {
+            logConnectionDiagnostic(
+                "syncThreadsList failed connected=\(isConnected) initialized=\(isInitialized) pending=\(pendingRequests.count) error=\(connectionDiagnosticDescription(for: error))"
+            )
             presentConnectionErrorIfNeeded(error)
         }
     }

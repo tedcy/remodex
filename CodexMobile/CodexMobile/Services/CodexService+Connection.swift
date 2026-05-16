@@ -74,6 +74,9 @@ extension CodexService {
                 attemptedURL: normalizedServerURL,
                 host: url.host
             )
+            logConnectionDiagnostic(
+                "connect failed host=\(url.host ?? "nil") message=\(friendlyMessage) error=\(connectionDiagnosticDescription(for: error))"
+            )
             if isRecoverableTransientConnectionError(error) || isRetryableSavedSessionConnectError(error) {
                 connectionRecoveryState = .retrying(attempt: 0, message: recoveryStatusMessage(for: error))
                 lastErrorMessage = retryableSessionUnavailableMessage(forConnectError: error)
@@ -474,9 +477,15 @@ extension CodexService {
             return
         }
 
+        logConnectionDiagnostic(
+            "handleReceiveError closeCode=\(relayCloseCodeRawValue(relayCloseCode).map(String.init) ?? "nil") error=\(connectionDiagnosticDescription(for: error))"
+        )
         cancelCurrentSocketConnection()
 
         let disposition = receiveErrorDisposition(for: error, relayCloseCode: relayCloseCode)
+        logConnectionDiagnostic(
+            "receive disposition clearSaved=\(disposition.shouldClearSavedRelaySession) autoReconnect=\(disposition.shouldAutoReconnectOnForeground) message=\(disposition.lastErrorMessage ?? "nil")"
+        )
         isConnected = false
         isInitialized = false
         shouldAutoReconnectOnForeground = disposition.shouldAutoReconnectOnForeground
@@ -677,6 +686,9 @@ extension CodexService {
     private func clearConnectionSyncState() {
         isBootstrappingConnectionSync = false
         stopSyncLoop()
+        threadListSyncInFlightTask?.cancel()
+        threadListSyncInFlightTask = nil
+        threadListSyncInFlightID = nil
         postConnectSyncTask?.cancel()
         postConnectSyncTask = nil
         postConnectSyncToken = nil
@@ -998,6 +1010,9 @@ extension CodexService {
     // Surfaces only meaningful connection failures to the UI and keeps reconnect noise silent.
     func presentConnectionErrorIfNeeded(_ error: Error, fallbackMessage: String? = nil) {
         guard !shouldSuppressUserFacingConnectionError(error) else {
+            logConnectionDiagnostic(
+                "presentConnectionError suppressed connected=\(isConnected) initialized=\(isInitialized) error=\(connectionDiagnosticDescription(for: error))"
+            )
             return
         }
 
@@ -1014,6 +1029,9 @@ extension CodexService {
             return
         }
 
+        logConnectionDiagnostic(
+            "presentConnectionError message=\(message) connected=\(isConnected) initialized=\(isInitialized) error=\(connectionDiagnosticDescription(for: error))"
+        )
         lastErrorMessage = message
     }
 
@@ -1034,11 +1052,11 @@ extension CodexService {
         if isOversizedRelayPayloadError(error) {
             return oversizedRelayPayloadMessage
         }
-        if shouldTreatSendFailureAsDisconnect(error) || isBenignBackgroundDisconnect(error) {
-            return "Connection was interrupted. Tap Reconnect to try again."
-        }
         if isRecoverableTransientConnectionError(error) {
             return "Connection timed out. Check server/network."
+        }
+        if shouldTreatSendFailureAsDisconnect(error) || isBenignBackgroundDisconnect(error) {
+            return "Connection was interrupted. Tap Reconnect to try again."
         }
         return error.localizedDescription
     }
