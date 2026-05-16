@@ -80,6 +80,7 @@ final class SubscriptionService {
     private static let cachedStateDefaultsKey = "codex.subscription.cachedState"
     private static let freeSendCountDefaultsKey = "codex.subscription.freeSendCount"
     private static let freeSendLimit = 5
+    private static let localProAccessEnabled = true
 
     private let defaults: UserDefaults
     @ObservationIgnored private let customerInfoUpdatesTaskStore = CustomerInfoUpdatesTaskStore()
@@ -111,19 +112,29 @@ final class SubscriptionService {
     }
 
     var remainingFreeSendAttempts: Int {
-        max(0, Self.freeSendLimit - freeSendCount)
+        if Self.localProAccessEnabled {
+            return Self.freeSendLimit
+        }
+        return max(0, Self.freeSendLimit - freeSendCount)
     }
 
     var hasFreeSendAccess: Bool {
-        freeSendCount < Self.freeSendLimit
+        if Self.localProAccessEnabled {
+            return true
+        }
+        return freeSendCount < Self.freeSendLimit
     }
 
     var hasAppAccess: Bool {
-        hasProAccess || hasFreeSendAccess
+        Self.localProAccessEnabled || hasProAccess || hasFreeSendAccess
     }
 
     // Counts a valid send attempt for free users even if the turn later fails.
     func consumeFreeSendAttemptIfNeeded() {
+        guard !Self.localProAccessEnabled else {
+            return
+        }
+
         guard !hasProAccess, freeSendCount < Self.freeSendLimit else {
             return
         }
@@ -328,7 +339,7 @@ private extension SubscriptionService {
     func applyCustomerInfo(_ info: CustomerInfo) {
         customerInfo = info
         let entitlement = info.entitlements.all[AppEnvironment.revenueCatEntitlementName]
-        hasProAccess = entitlement?.isActive == true
+        hasProAccess = Self.localProAccessEnabled || entitlement?.isActive == true
         hasCachedOptimisticAccess = hasProAccess
         latestPurchaseDate = entitlement?.latestPurchaseDate
         willRenew = entitlement?.willRenew == true
@@ -340,6 +351,13 @@ private extension SubscriptionService {
     // Rehydrates the last known subscription snapshot so launch and foreground recovery are local-first.
     func restoreCachedStateIfAvailable() {
         freeSendCount = defaults.integer(forKey: Self.freeSendCountDefaultsKey)
+        guard !Self.localProAccessEnabled else {
+            hasProAccess = true
+            hasCachedOptimisticAccess = true
+            bootstrapState = .ready
+            return
+        }
+
         guard let data = defaults.data(forKey: Self.cachedStateDefaultsKey),
               let cachedState = try? JSONDecoder().decode(CachedSubscriptionState.self, from: data) else {
             return
