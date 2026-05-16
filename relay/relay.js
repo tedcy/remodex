@@ -193,6 +193,9 @@ function setupRelay(
         // a reconnect, so fail fast with an explicit retry-required close instead
         // of silently dropping queued client work during a later flush.
         relayMetrics.mobileMessagesRejectedDuringMacAbsence += 1;
+        console.warn(
+          `[relay] Mobile message rejected while Mac absent -> ${relaySessionLogLabel(sessionId)}`
+        );
         ws.close(CLOSE_CODE_MAC_ABSENCE_BUFFER_FULL, "Mac temporarily unavailable");
       }
     });
