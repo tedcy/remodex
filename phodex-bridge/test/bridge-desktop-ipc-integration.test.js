@@ -24,7 +24,7 @@ test("bridge forwards desktop IPC actions to the phone and routes replies back t
   let ipcServerSocket = null;
   let fakeCodex = null;
 
-  await new Promise((resolve) => relayServer.once("listening", resolve));
+  await waitForServerListening(relayServer);
   relayServer.on("connection", (socket) => {
     relaySocket = socket;
     socket.on("message", (data) => {
@@ -71,7 +71,7 @@ test("bridge forwards desktop IPC actions to the phone and routes replies back t
   });
 
   t.after(() => {
-    fakeCodex?.emitClose();
+    stopFakeCodexForTest(fakeCodex);
     relaySocket?.close();
     relayServer.close();
     ipcServer.close();
@@ -168,6 +168,99 @@ test("bridge forwards desktop IPC actions to the phone and routes replies back t
       && message.params?.requestId === "req-ipc"
   );
   assert.equal(resolvedMessage.params.threadId, "thread-ipc");
+});
+
+test("bridge coalesces duplicate in-flight thread/list requests", async (t) => {
+  const relayServer = new WebSocket.Server({ port: 0 });
+  const relayMessages = [];
+  let relaySocket = null;
+  let fakeCodex = null;
+
+  await waitForServerListening(relayServer);
+  relayServer.on("connection", (socket) => {
+    relaySocket = socket;
+    socket.on("message", (data) => {
+      const parsed = safeParseJSON(data.toString("utf8"));
+      if (parsed) {
+        relayMessages.push(parsed);
+      }
+    });
+  });
+
+  const { startBridge } = loadBridgeWithTestDoubles({
+    createCodexTransportImpl() {
+      fakeCodex = createFakeCodexTransport();
+      return fakeCodex;
+    },
+  });
+
+  t.after(() => {
+    stopFakeCodexForTest(fakeCodex);
+    relaySocket?.close();
+    relayServer.close();
+  });
+
+  startBridge({
+    printPairingQr: false,
+    config: {
+      relayUrl: `ws://127.0.0.1:${relayServer.address().port}`,
+      pushServiceUrl: "",
+      pushPreviewMaxChars: 160,
+      refreshEnabled: false,
+      refreshDebounceMs: 1,
+      keepMacAwakeEnabled: false,
+      codexEndpoint: "",
+      refreshCommand: "",
+      codexBundleId: "",
+      codexAppPath: "",
+      desktopIpcSocketPath: "",
+    },
+  });
+
+  await waitFor(() => relaySocket && relaySocket.readyState === WebSocket.OPEN);
+
+  relaySocket.send(JSON.stringify({
+    id: "thread-list-primary",
+    method: "thread/list",
+    params: {
+      limit: 70,
+      sourceKinds: ["cli", "appServer"],
+    },
+  }));
+  relaySocket.send(JSON.stringify({
+    id: "thread-list-duplicate",
+    method: "thread/list",
+    params: {
+      sourceKinds: ["cli", "appServer"],
+      limit: 70,
+    },
+  }));
+
+  await waitFor(() => fakeCodex.sent.filter((message) => message.method === "thread/list").length === 1);
+  assert.deepEqual(
+    fakeCodex.sent.filter((message) => message.method === "thread/list").map((message) => message.id),
+    ["thread-list-primary"]
+  );
+
+  fakeCodex.emitMessage(JSON.stringify({
+    id: "thread-list-primary",
+    result: {
+      data: [{ id: "thread-1", title: "Thread 1" }],
+      nextCursor: null,
+    },
+  }));
+
+  const primaryResponse = await waitForMessage(
+    relayMessages,
+    (message) => message.id === "thread-list-primary"
+  );
+  const duplicateResponse = await waitForMessage(
+    relayMessages,
+    (message) => message.id === "thread-list-duplicate"
+  );
+
+  assert.deepEqual(primaryResponse.result, duplicateResponse.result);
+  assert.equal(primaryResponse.result.data[0].id, "thread-1");
 });
 
 // Loads bridge.js with plaintext test transports while leaving the production module untouched.
@@ -273,10 +366,19 @@ function createFakeCodexTransport() {
     shutdown() {
       this.emitClose();
     },
+    emitMessage(message) {
+      listeners.message?.(message);
+    },
     emitClose() {
       listeners.close?.();
     },
   };
+}
+
+function stopFakeCodexForTest(fakeCodex) {
+  const previousExitCode = process.exitCode;
+  fakeCodex?.emitClose();
+  process.exitCode = previousExitCode;
 }
 
 function attachFrameReader(socket, onFrame) {
@@ -306,6 +408,13 @@ function writeFrame(socket, payload) {
 async function waitForMessage(messages, predicate, timeoutMs = 500) {
   await waitFor(() => messages.find(predicate), timeoutMs);
   return messages.find(predicate);
+}
+
+async function waitForServerListening(server) {
+  if (server.address()) {
+    return;
+  }
+  await new Promise((resolve) => server.once("listening", resolve));
 }
 
 async function waitFor(predicate, timeoutMs = 500) {
