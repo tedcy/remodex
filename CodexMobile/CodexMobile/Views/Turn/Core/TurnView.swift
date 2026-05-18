@@ -40,6 +40,7 @@ struct TurnView: View {
     @State private var macHandoffErrorMessage: String?
     @State private var isHandingOffToMac = false
     @State private var isStartingSiblingChat = false
+    @State private var isReloadingThreadHistory = false
     @State private var isForkingThread = false
     @State private var checkedOutElsewhereAlert: CheckedOutElsewhereAlert?
     @State private var isVoiceRecording = false
@@ -203,7 +204,9 @@ struct TurnView: View {
                 showsThreadActions: codex.isConnected,
                 isHandingOffToMac: isHandingOffToMac,
                 isStartingNewChat: isStartingSiblingChat,
+                isReloadingConversation: isReloadingThreadHistory,
                 canHandOffToWorktree: canHandOffToWorktree,
+                canReloadConversation: !isThreadRunning,
                 worktreeHandoffTitle: toolbarWorktreeHandoffTitle,
                 isCreatingGitWorktree: viewModel.isCreatingGitWorktree,
                 repoDiffTotals: viewModel.gitRepoSync?.repoDiffTotals,
@@ -220,6 +223,9 @@ struct TurnView: View {
                 onTapNewChat: onTapNewChat,
                 onTapTerminal: onOpenTerminal == nil ? nil : {
                     onOpenTerminal?(gitWorkingDirectory)
+                },
+                onTapReloadConversation: {
+                    reloadConversationFromServer(isThreadRunning: isThreadRunning)
                 },
                 onTapRepoDiff: onTapRepoDiff,
                 onGitAction: { action in
@@ -632,6 +638,27 @@ struct TurnView: View {
 
         Task {
             await codex.refreshUsageStatus(threadId: thread.id)
+        }
+    }
+
+    private func reloadConversationFromServer(isThreadRunning: Bool) {
+        guard !isReloadingThreadHistory else { return }
+        guard !isThreadRunning else {
+            codex.lastErrorMessage = "Wait for the current run to finish before reloading this conversation."
+            return
+        }
+
+        isReloadingThreadHistory = true
+        Task { @MainActor in
+            defer { isReloadingThreadHistory = false }
+
+            do {
+                _ = try await codex.reloadThreadHistoryFromServer(threadId: thread.id)
+                codex.lastErrorMessage = nil
+            } catch {
+                codex.lastErrorMessage = codex.userFacingTurnErrorMessageForFooter(from: error)
+                    ?? error.localizedDescription
+            }
         }
     }
 

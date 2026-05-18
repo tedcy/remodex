@@ -18,7 +18,9 @@ struct TurnToolbarContent: ToolbarContent {
     let showsThreadActions: Bool
     let isHandingOffToMac: Bool
     let isStartingNewChat: Bool
+    let isReloadingConversation: Bool
     let canHandOffToWorktree: Bool
+    let canReloadConversation: Bool
     let worktreeHandoffTitle: String
     let isCreatingGitWorktree: Bool
     let repoDiffTotals: GitDiffTotals?
@@ -34,6 +36,7 @@ struct TurnToolbarContent: ToolbarContent {
     var onTapWorktreeHandoff: (() -> Void)?
     var onTapNewChat: (() -> Void)?
     var onTapTerminal: (() -> Void)?
+    var onTapReloadConversation: (() -> Void)?
     var onTapRepoDiff: (() -> Void)?
     let onGitAction: (TurnGitActionKind) -> Void
 
@@ -41,7 +44,7 @@ struct TurnToolbarContent: ToolbarContent {
 
     var body: some ToolbarContent {
         let hasTrailingCluster = showsGitActions
-        let isThreadActionLoading = isHandingOffToMac || isStartingNewChat
+        let isThreadActionLoading = isHandingOffToMac || isStartingNewChat || isReloadingConversation
         let canTapMacHandoff = onTapMacHandoff != nil && !isThreadActionLoading
         let canTapWorktreeHandoff = onTapWorktreeHandoff != nil
             && canHandOffToWorktree
@@ -49,6 +52,9 @@ struct TurnToolbarContent: ToolbarContent {
             && !isThreadActionLoading
         let canTapNewChat = onTapNewChat != nil && !isThreadActionLoading
         let canTapTerminal = onTapTerminal != nil
+        let canTapReloadConversation = onTapReloadConversation != nil
+            && canReloadConversation
+            && !isThreadActionLoading
 
         ToolbarItem(placement: .principal) {
             VStack(alignment: .leading, spacing: 1) {
@@ -123,6 +129,17 @@ struct TurnToolbarContent: ToolbarContent {
                         }
                     }
                     .disabled(!canTapTerminal)
+
+                    Button {
+                        HapticFeedback.shared.triggerImpactFeedback(style: .light)
+                        onTapReloadConversation?()
+                    } label: {
+                        HStack(spacing: 10) {
+                            ResizableThreadActionSymbol(systemName: "arrow.clockwise", pointSize: 13)
+                            Text(isReloadingConversation ? "Reloading Conversation..." : "Reload Conversation")
+                        }
+                    }
+                    .disabled(!canTapReloadConversation)
                 } label: {
                     TurnMacHandoffToolbarLabel(isLoading: isThreadActionLoading)
                 }

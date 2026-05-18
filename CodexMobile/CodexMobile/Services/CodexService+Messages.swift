@@ -58,6 +58,22 @@ extension CodexService {
         case ready
     }
 
+    private struct ThreadHistoryReloadSnapshot {
+        let messages: [CodexMessage]?
+        let messageRevision: Int?
+        let wasHydrated: Bool
+        let wasInitialTurnsLoaded: Bool
+        let wasAuthoritativeLocalStart: Bool
+        let neededCanonicalReconcile: Bool
+        let hadSatisfiedDeferredHydration: Bool
+        let olderCursor: JSONValue?
+        let exhaustedOlderCursor: JSONValue?
+        let wasLoadingOlderHistory: Bool
+        let projectionLimit: Int?
+        let olderHistoryLoadError: String?
+        let latestTurnTerminalState: CodexTurnTerminalState?
+    }
+
     // Returns the full persisted timeline for a single thread.
     func messages(for threadId: String) -> [CodexMessage] {
         messagesByThread[threadId] ?? []
@@ -164,9 +180,12 @@ extension CodexService {
     }
 
     // Prunes service-owned render caches so removed/archived threads do not keep stale snapshots alive.
-    func removeThreadTimelineState(for threadId: String) {
-        threadTimelineStateByThread.removeValue(forKey: threadId)
+    func removeThreadTimelineState(for threadId: String, preserveTimelineState: Bool = false) {
+        if !preserveTimelineState {
+            threadTimelineStateByThread.removeValue(forKey: threadId)
+        }
         stoppedTurnIDsByThread.removeValue(forKey: threadId)
+        latestTurnTerminalStateByThread.removeValue(forKey: threadId)
         messageIndexCacheByThread.removeValue(forKey: threadId)
         latestAssistantOutputByThread.removeValue(forKey: threadId)
         latestAssistantMessageIDByThread.removeValue(forKey: threadId)
@@ -191,10 +210,130 @@ extension CodexService {
         cancelPerThreadRefreshWork(for: threadId)
     }
 
+    @discardableResult
+    func reloadThreadHistoryFromServer(threadId rawThreadId: String) async throws -> ThreadHistoryLoadOutcome {
+        guard let threadId = normalizedInterruptIdentifier(rawThreadId) else {
+            throw CodexServiceError.invalidInput("Conversation is not available.")
+        }
+        guard isConnected else {
+            throw CodexServiceError.disconnected
+        }
+        guard !threadHasActiveOrRunningTurn(threadId) else {
+            throw CodexServiceError.invalidInput(
+                "Wait for the current run to finish before reloading this conversation."
+            )
+        }
+
+        let snapshot = threadHistoryReloadSnapshot(for: threadId)
+        removeThreadTimelineState(for: threadId, preserveTimelineState: true)
+        messagesByThread.removeValue(forKey: threadId)
+        hydratedThreadIDs.remove(threadId)
+        initialTurnsLoadedByThreadID.remove(threadId)
+        noteMessagesChanged(for: threadId)
+        refreshThreadTimelineState(for: threadId)
+
+        do {
+            let outcome = try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
+            guard shouldKeepReloadedThreadHistory(outcome) else {
+                restoreThreadHistoryReloadSnapshot(snapshot, for: threadId)
+                throw CodexServiceError.invalidResponse("Couldn't reload this conversation from the server yet.")
+            }
+
+            noteMessagesChanged(for: threadId)
+            refreshThreadTimelineState(for: threadId)
+            persistMessages()
+            return outcome
+        } catch {
+            restoreThreadHistoryReloadSnapshot(snapshot, for: threadId)
+            throw error
+        }
+    }
+
+    private func threadHistoryReloadSnapshot(for threadId: String) -> ThreadHistoryReloadSnapshot {
+        ThreadHistoryReloadSnapshot(
+            messages: messagesByThread[threadId],
+            messageRevision: messageRevisionByThread[threadId],
+            wasHydrated: hydratedThreadIDs.contains(threadId),
+            wasInitialTurnsLoaded: initialTurnsLoadedByThreadID.contains(threadId),
+            wasAuthoritativeLocalStart: threadsWithAuthoritativeLocalHistoryStart.contains(threadId),
+            neededCanonicalReconcile: threadsNeedingCanonicalHistoryReconcile.contains(threadId),
+            hadSatisfiedDeferredHydration: threadsWithSatisfiedDeferredHistoryHydration.contains(threadId),
+            olderCursor: olderThreadHistoryCursorByThreadID[threadId],
+            exhaustedOlderCursor: exhaustedOlderThreadHistoryCursorByThreadID[threadId],
+            wasLoadingOlderHistory: loadingOlderThreadHistoryIDs.contains(threadId),
+            projectionLimit: threadTimelineProjectionLimitByThreadID[threadId],
+            olderHistoryLoadError: olderHistoryLoadErrorByThreadID[threadId],
+            latestTurnTerminalState: latestTurnTerminalStateByThread[threadId]
+        )
+    }
+
+    private func restoreThreadHistoryReloadSnapshot(
+        _ snapshot: ThreadHistoryReloadSnapshot,
+        for threadId: String
+    ) {
+        if let messages = snapshot.messages {
+            messagesByThread[threadId] = messages
+        } else {
+            messagesByThread.removeValue(forKey: threadId)
+        }
+        if let messageRevision = snapshot.messageRevision {
+            messageRevisionByThread[threadId] = messageRevision
+        } else {
+            messageRevisionByThread.removeValue(forKey: threadId)
+        }
+
+        Self.restore(snapshot.wasHydrated, in: &hydratedThreadIDs, threadId: threadId)
+        Self.restore(snapshot.wasInitialTurnsLoaded, in: &initialTurnsLoadedByThreadID, threadId: threadId)
+        Self.restore(snapshot.wasAuthoritativeLocalStart, in: &threadsWithAuthoritativeLocalHistoryStart, threadId: threadId)
+        Self.restore(snapshot.neededCanonicalReconcile, in: &threadsNeedingCanonicalHistoryReconcile, threadId: threadId)
+        Self.restore(
+            snapshot.hadSatisfiedDeferredHydration,
+            in: &threadsWithSatisfiedDeferredHistoryHydration,
+            threadId: threadId
+        )
+        Self.restore(snapshot.wasLoadingOlderHistory, in: &loadingOlderThreadHistoryIDs, threadId: threadId)
+
+        Self.restore(snapshot.olderCursor, in: &olderThreadHistoryCursorByThreadID, threadId: threadId)
+        Self.restore(snapshot.exhaustedOlderCursor, in: &exhaustedOlderThreadHistoryCursorByThreadID, threadId: threadId)
+        Self.restore(snapshot.projectionLimit, in: &threadTimelineProjectionLimitByThreadID, threadId: threadId)
+        Self.restore(snapshot.olderHistoryLoadError, in: &olderHistoryLoadErrorByThreadID, threadId: threadId)
+        Self.restore(snapshot.latestTurnTerminalState, in: &latestTurnTerminalStateByThread, threadId: threadId)
+
+        persistThreadHistoryPaginationState()
+        persistMessages()
+        refreshThreadTimelineState(for: threadId)
+    }
+
+    private func shouldKeepReloadedThreadHistory(_ outcome: ThreadHistoryLoadOutcome) -> Bool {
+        switch outcome {
+        case .alreadyHydrated, .loadedCanonicalHistory, .loadedRecentWindow, .loadedPaginatedWindow:
+            return true
+        case .notMaterialized, .skippedForRunningThread, .deferredAfterTimeout:
+            return false
+        }
+    }
+
+    private static func restore(_ shouldContain: Bool, in set: inout Set<String>, threadId: String) {
+        if shouldContain {
+            set.insert(threadId)
+        } else {
+            set.remove(threadId)
+        }
+    }
+
+    private static func restore<Value>(_ value: Value?, in dictionary: inout [String: Value], threadId: String) {
+        if let value {
+            dictionary[threadId] = value
+        } else {
+            dictionary.removeValue(forKey: threadId)
+        }
+    }
+
     // Clears every service-owned timeline cache during global teardown.
     func removeAllThreadTimelineState() {
         threadTimelineStateByThread.removeAll()
         stoppedTurnIDsByThread.removeAll()
+        latestTurnTerminalStateByThread.removeAll()
         messageIndexCacheByThread.removeAll()
         latestAssistantOutputByThread.removeAll()
         latestAssistantMessageIDByThread.removeAll()

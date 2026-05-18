@@ -345,6 +345,150 @@ final class CodexServiceCatchupRecoveryTests: XCTestCase {
         XCTAssertLessThanOrEqual(canonicalHistoryReadCount, 1)
     }
 
+    func testReloadThreadHistoryFromServerDropsStaleLocalCache() async throws {
+        let service = makeService()
+        let threadID = "thread-reload-success"
+        let staleMessage = CodexMessage(threadId: threadID, role: .assistant, text: "stale local")
+
+        service.isConnected = true
+        service.isInitialized = true
+        service.supportsTurnPagination = false
+        service.upsertThread(CodexThread(id: threadID, title: "Reload"))
+        service.messagesByThread[threadID] = [staleMessage]
+        service.hydratedThreadIDs.insert(threadID)
+        service.initialTurnsLoadedByThreadID.insert(threadID)
+        service.threadTimelineProjectionLimitByThreadID[threadID] = 500
+        service.olderHistoryLoadErrorByThreadID[threadID] = "Old error"
+        let state = service.timelineState(for: threadID)
+
+        var recordedMethods: [String] = []
+        service.requestTransportOverride = { method, params in
+            recordedMethods.append(method)
+            XCTAssertEqual(method, "thread/read")
+            XCTAssertEqual(params?.objectValue?["threadId"]?.stringValue, threadID)
+            return self.threadReadResponse(
+                threadID: threadID,
+                title: "Reload",
+                itemID: "server-assistant",
+                text: "server fresh"
+            )
+        }
+
+        let outcome = try await service.reloadThreadHistoryFromServer(threadId: threadID)
+
+        XCTAssertEqual(outcome, .loadedCanonicalHistory)
+        XCTAssertEqual(recordedMethods, ["thread/read"])
+        XCTAssertEqual(service.messages(for: threadID).map(\.text), ["server fresh"])
+        XCTAssertFalse(service.messages(for: threadID).contains { $0.text == staleMessage.text })
+        XCTAssertEqual(
+            service.threadTimelineProjectionLimitByThreadID[threadID],
+            TurnTimelineProjectionPolicy.initialMessageLimit
+        )
+        XCTAssertNil(service.olderHistoryLoadErrorByThreadID[threadID])
+        XCTAssertEqual(state.renderSnapshot.messages.map(\.text), ["server fresh"])
+    }
+
+    func testReloadThreadHistoryFromServerRestoresLocalCacheWhenRequestFails() async {
+        let service = makeService()
+        let threadID = "thread-reload-failure"
+        let staleMessage = CodexMessage(threadId: threadID, role: .assistant, text: "stale local")
+
+        service.isConnected = true
+        service.isInitialized = true
+        service.supportsTurnPagination = false
+        service.upsertThread(CodexThread(id: threadID, title: "Reload"))
+        service.messagesByThread[threadID] = [staleMessage]
+        service.hydratedThreadIDs.insert(threadID)
+        service.initialTurnsLoadedByThreadID.insert(threadID)
+        service.threadsWithAuthoritativeLocalHistoryStart.insert(threadID)
+        service.threadTimelineProjectionLimitByThreadID[threadID] = 500
+        service.olderHistoryLoadErrorByThreadID[threadID] = "Old error"
+        let state = service.timelineState(for: threadID)
+
+        service.requestTransportOverride = { _, _ in
+            throw CodexServiceError.invalidResponse("boom")
+        }
+
+        do {
+            _ = try await service.reloadThreadHistoryFromServer(threadId: threadID)
+            XCTFail("Expected reload failure")
+        } catch {
+            // Expected failure; the local cache should be restored below.
+        }
+
+        XCTAssertEqual(service.messages(for: threadID).map(\.text), ["stale local"])
+        XCTAssertTrue(service.hydratedThreadIDs.contains(threadID))
+        XCTAssertTrue(service.initialTurnsLoadedByThreadID.contains(threadID))
+        XCTAssertTrue(service.threadsWithAuthoritativeLocalHistoryStart.contains(threadID))
+        XCTAssertEqual(service.threadTimelineProjectionLimitByThreadID[threadID], 500)
+        XCTAssertEqual(service.olderHistoryLoadErrorByThreadID[threadID], "Old error")
+        XCTAssertEqual(state.renderSnapshot.messages.map(\.text), ["stale local"])
+    }
+
+    func testReloadThreadHistoryFromServerRejectsRunningThreadWithoutClearingCache() async {
+        let service = makeService()
+        let threadID = "thread-reload-running"
+        let staleMessage = CodexMessage(threadId: threadID, role: .assistant, text: "stale local")
+
+        service.isConnected = true
+        service.isInitialized = true
+        service.upsertThread(CodexThread(id: threadID, title: "Reload"))
+        service.messagesByThread[threadID] = [staleMessage]
+        service.runningThreadIDs.insert(threadID)
+
+        var requestCount = 0
+        service.requestTransportOverride = { _, _ in
+            requestCount += 1
+            return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+        }
+
+        do {
+            _ = try await service.reloadThreadHistoryFromServer(threadId: threadID)
+            XCTFail("Expected running reload to be rejected")
+        } catch let error as CodexServiceError {
+            XCTAssertEqual(
+                error.errorDescription,
+                "Wait for the current run to finish before reloading this conversation."
+            )
+        } catch {
+            XCTFail("Unexpected error \(error)")
+        }
+
+        XCTAssertEqual(requestCount, 0)
+        XCTAssertEqual(service.messages(for: threadID).map(\.text), ["stale local"])
+    }
+
+    private func threadReadResponse(
+        threadID: String,
+        title: String,
+        itemID: String,
+        text: String
+    ) -> RPCMessage {
+        RPCMessage(
+            id: .string(UUID().uuidString),
+            result: .object([
+                "thread": .object([
+                    "id": .string(threadID),
+                    "title": .string(title),
+                    "turns": .array([
+                        .object([
+                            "id": .string("turn-\(itemID)"),
+                            "status": .string("completed"),
+                            "items": .array([
+                                .object([
+                                    "id": .string(itemID),
+                                    "type": .string("assistantMessage"),
+                                    "message": .string(text),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+            includeJSONRPC: false
+        )
+    }
+
     private func makeService() -> CodexService {
         let suiteName = "CodexServiceCatchupRecoveryTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard
