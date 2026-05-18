@@ -8,6 +8,7 @@ const { execFile } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { fileURLToPath } = require("url");
 const { promisify } = require("util");
 const { resolveCodexGeneratedImagesRoot } = require("./codex-home");
 const { gitStatus } = require("./git-handler");
@@ -23,6 +24,7 @@ const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
 const MAX_IMAGE_READ_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_PREVIEW_READ_BYTES = 2 * 1024 * 1024;
+const MAX_TEXT_FILE_READ_BYTES = 2 * 1024 * 1024;
 const MIN_IMAGE_PREVIEW_PIXEL_DIMENSION = 128;
 const MAX_IMAGE_PREVIEW_PIXEL_DIMENSION = 3_200;
 const IMAGE_PREVIEW_RETRY_SCALE = 0.75;
@@ -36,6 +38,93 @@ const IMAGE_MIME_TYPES_BY_EXTENSION = new Map([
   [".webp", "image/webp"],
   [".heic", "image/heic"],
   [".heif", "image/heif"],
+]);
+const TEXT_MIME_TYPES_BY_EXTENSION = new Map([
+  [".bash", "text/x-shellscript"],
+  [".c", "text/x-c"],
+  [".cc", "text/x-c++"],
+  [".cfg", "text/plain"],
+  [".clj", "text/x-clojure"],
+  [".cmake", "text/x-cmake"],
+  [".conf", "text/plain"],
+  [".cpp", "text/x-c++"],
+  [".cs", "text/x-csharp"],
+  [".css", "text/css"],
+  [".csv", "text/csv"],
+  [".cxx", "text/x-c++"],
+  [".dart", "text/x-dart"],
+  [".diff", "text/x-diff"],
+  [".ex", "text/x-elixir"],
+  [".exs", "text/x-elixir"],
+  [".fish", "text/x-shellscript"],
+  [".go", "text/x-go"],
+  [".gradle", "text/plain"],
+  [".graphql", "application/graphql"],
+  [".h", "text/x-c"],
+  [".hh", "text/x-c++"],
+  [".hpp", "text/x-c++"],
+  [".htm", "text/html"],
+  [".html", "text/html"],
+  [".ini", "text/plain"],
+  [".java", "text/x-java"],
+  [".js", "application/javascript"],
+  [".json", "application/json"],
+  [".jsonl", "application/x-ndjson"],
+  [".jsx", "text/jsx"],
+  [".kt", "text/x-kotlin"],
+  [".kts", "text/x-kotlin"],
+  [".less", "text/css"],
+  [".log", "text/plain"],
+  [".lua", "text/x-lua"],
+  [".m", "text/x-objective-c"],
+  [".markdown", "text/markdown"],
+  [".md", "text/markdown"],
+  [".mjs", "application/javascript"],
+  [".mm", "text/x-objective-c++"],
+  [".patch", "text/x-diff"],
+  [".php", "text/x-php"],
+  [".plist", "application/xml"],
+  [".ps1", "text/x-powershell"],
+  [".py", "text/x-python"],
+  [".r", "text/x-r"],
+  [".rb", "text/x-ruby"],
+  [".rs", "text/x-rust"],
+  [".sass", "text/css"],
+  [".scala", "text/x-scala"],
+  [".scss", "text/css"],
+  [".sh", "text/x-shellscript"],
+  [".sql", "application/sql"],
+  [".svelte", "text/html"],
+  [".swift", "text/x-swift"],
+  [".toml", "application/toml"],
+  [".ts", "text/typescript"],
+  [".tsx", "text/tsx"],
+  [".tsv", "text/tab-separated-values"],
+  [".txt", "text/plain"],
+  [".vue", "text/html"],
+  [".xml", "application/xml"],
+  [".yaml", "application/yaml"],
+  [".yml", "application/yaml"],
+  [".zsh", "text/x-shellscript"],
+]);
+const TEXT_MIME_TYPES_BY_FILE_NAME = new Map([
+  [".env", "text/plain"],
+  [".env.example", "text/plain"],
+  [".gitattributes", "text/plain"],
+  [".gitignore", "text/plain"],
+  [".npmrc", "text/plain"],
+  [".node-version", "text/plain"],
+  [".nvmrc", "text/plain"],
+  ["brewfile", "text/plain"],
+  ["cartfile", "text/plain"],
+  ["dangerfile", "text/x-ruby"],
+  ["dockerfile", "text/plain"],
+  ["gemfile", "text/x-ruby"],
+  ["license", "text/plain"],
+  ["makefile", "text/x-makefile"],
+  ["podfile", "text/x-ruby"],
+  ["procfile", "text/plain"],
+  ["readme", "text/markdown"],
 ]);
 /** Match git-handler.js: Node default maxBuffer is 1 MiB. */
 const GIT_EXEC_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
@@ -83,6 +172,9 @@ async function handleWorkspaceMethod(method, params) {
   if (method === "workspace/readImage") {
     return workspaceReadImage(params);
   }
+  if (method === "workspace/readFile") {
+    return workspaceReadFile(params);
+  }
 
   const cwd = await resolveWorkspaceCwd(params);
   const repoRoot = await resolveRepoRoot(cwd);
@@ -109,6 +201,126 @@ async function handleWorkspaceMethod(method, params) {
     default:
       throw workspaceError("unknown_method", `Unknown workspace method: ${method}`);
   }
+}
+
+// Reads a bounded text file from the selected workspace without exposing arbitrary host paths.
+async function workspaceReadFile(params) {
+  const requestedPath = normalizedFileRequestPath(
+    firstNonEmptyString([params.path, params.filePath, params.localPath])
+  );
+  if (!requestedPath) {
+    throw workspaceError("missing_file_path", "The request must include a file path.");
+  }
+
+  const cwd = await resolveWorkspaceCwd(params);
+  const filePath = path.isAbsolute(requestedPath)
+    ? path.resolve(requestedPath)
+    : path.resolve(cwd, requestedPath);
+  const [realFilePath, realWorkspaceRoot] = await Promise.all([
+    realpathOrNull(filePath),
+    resolveFileWorkspaceRoot(cwd),
+  ]);
+  if (!realFilePath) {
+    throw workspaceError("file_not_found", "The file no longer exists on this computer.");
+  }
+  if (!realWorkspaceRoot || !isPathInside(realFilePath, realWorkspaceRoot)) {
+    throw workspaceError("file_path_not_allowed", "Only files in the selected workspace can be previewed.");
+  }
+
+  const stat = await fs.promises.stat(realFilePath);
+  if (!stat.isFile()) {
+    throw workspaceError("not_a_file", "The requested path is not a file.");
+  }
+
+  const mimeType = textMimeTypeForPath(realFilePath);
+  if (!mimeType) {
+    throw workspaceError("unsupported_file_type", "Only text files can be previewed.");
+  }
+  if (stat.size > MAX_TEXT_FILE_READ_BYTES) {
+    throw workspaceError("file_too_large", "This file is too large to preview on the phone.");
+  }
+
+  let text;
+  try {
+    text = await fs.promises.readFile(realFilePath, "utf8");
+  } catch {
+    throw workspaceError("file_read_failed", "This file could not be read.");
+  }
+
+  return {
+    path: realFilePath,
+    fileName: path.basename(realFilePath),
+    mimeType,
+    kind: "text",
+    byteLength: stat.size,
+    mtimeMs: stat.mtimeMs,
+    text,
+    truncated: false,
+  };
+}
+
+function normalizedFileRequestPath(rawPath) {
+  if (!rawPath) {
+    return null;
+  }
+
+  let candidate = rawPath.trim();
+  if (!candidate) {
+    return null;
+  }
+
+  if (/^file:\/\//i.test(candidate)) {
+    try {
+      candidate = fileURLToPath(candidate);
+    } catch {
+      candidate = candidate.replace(/^file:\/\//i, "");
+    }
+  } else {
+    candidate = decodePercentEscapes(candidate);
+  }
+
+  return stripTrailingLineColumnSuffix(candidate);
+}
+
+function decodePercentEscapes(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function stripTrailingLineColumnSuffix(candidatePath) {
+  const withoutSuffix = candidatePath.replace(/:\d+(?::\d+)?$/, "");
+  return withoutSuffix || candidatePath;
+}
+
+function textMimeTypeForPath(filePath) {
+  const basename = path.basename(filePath);
+  const lowerBasename = basename.toLowerCase();
+  if (TEXT_MIME_TYPES_BY_FILE_NAME.has(lowerBasename)) {
+    return TEXT_MIME_TYPES_BY_FILE_NAME.get(lowerBasename);
+  }
+  if (lowerBasename.startsWith("dockerfile")) {
+    return "text/plain";
+  }
+
+  return TEXT_MIME_TYPES_BY_EXTENSION.get(path.extname(filePath).toLowerCase()) || null;
+}
+
+// Text previews are scoped to the Git repo root when safe; otherwise they stay inside cwd.
+async function resolveFileWorkspaceRoot(cwd) {
+  const realCwd = await realpathOrNull(cwd);
+  if (!realCwd || isBroadWorkspaceRoot(realCwd)) {
+    return null;
+  }
+
+  const realRepoRoot = await resolveRepoRoot(cwd).then(realpathOrNull).catch(() => null);
+  if (realRepoRoot && !isBroadWorkspaceRoot(realRepoRoot)) {
+    return realRepoRoot;
+  }
+
+  return realCwd;
 }
 
 // Reads recognized local image files from the bound repo, Codex image cache, or host temp screenshot folders.

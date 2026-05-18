@@ -337,6 +337,7 @@ struct MessageRow: View, Equatable {
     @State private var pendingAssistantDisplayText: String?
     @State private var assistantDisplayUpdateTask: Task<Void, Never>?
     @State private var textExpansionLevel = 0
+    @State private var workspaceTextFilePreviewRequest: WorkspaceTextFilePreviewRequest?
 
     static func == (lhs: MessageRow, rhs: MessageRow) -> Bool {
         MessageRowMessageSignature(lhs.message) == MessageRowMessageSignature(rhs.message)
@@ -420,6 +421,15 @@ struct MessageRow: View, Equatable {
         .sheet(item: $selectableTextSheet) { sheet in
             SelectableMessageTextSheet(state: sheet)
         }
+        .fullScreenCover(item: $workspaceTextFilePreviewRequest) { request in
+            WorkspaceTextFilePreviewScreen(
+                request: request,
+                onDismiss: { workspaceTextFilePreviewRequest = nil }
+            )
+        }
+        .environment(\.openURL, OpenURLAction { url in
+            handleOpenURL(url)
+        })
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipped()
         .onAppear {
@@ -659,6 +669,19 @@ struct MessageRow: View, Equatable {
     private func expandVisibleText() {
         textExpansionLevel += 1
         synchronizeAssistantDisplayText(immediate: true)
+    }
+
+    private func handleOpenURL(_ url: URL) -> OpenURLAction.Result {
+        if let request = WorkspaceTextFileLinkParser.request(
+            from: url,
+            currentWorkingDirectory: currentWorkingDirectory
+        ) {
+            HapticFeedback.shared.triggerImpactFeedback(style: .light)
+            workspaceTextFilePreviewRequest = request
+            return .handled
+        }
+
+        return .systemAction(url)
     }
 
     private func assistantTurnEndActions(accessoryState: AssistantBlockAccessoryState) -> some View {

@@ -409,10 +409,11 @@ The bridge intercepts `git/*` JSON-RPC calls from the phone and executes them lo
 
 ## Workspace Integration
 
-The bridge also handles local workspace-scoped revert operations for the assistant revert flow:
+The bridge also handles local workspace-scoped file previews and revert operations:
 
 | Command | Description |
 |---------|-------------|
+| `workspace/readFile` | Reads a bounded text preview for a file inside the selected workspace |
 | `workspace/revertPatchPreview` | Checks whether a reverse patch can be applied cleanly in the local repo |
 | `workspace/revertPatchApply` | Applies the reverse patch locally when the preview succeeds |
 
