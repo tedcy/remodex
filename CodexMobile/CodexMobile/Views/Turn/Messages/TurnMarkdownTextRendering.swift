@@ -491,10 +491,6 @@ enum MarkdownTextFormatter {
             candidate.removeFirst()
         }
 
-        guard candidate.hasPrefix("/") || candidate.contains("/") else {
-            return nil
-        }
-
         let fullRange = NSRange(location: 0, length: (candidate as NSString).length)
 
         var path = candidate
@@ -502,10 +498,19 @@ enum MarkdownTextFormatter {
 
         if let lineRegex = TurnMessageRegexCache.filenameWithLine,
            let match = lineRegex.firstMatch(in: candidate, range: fullRange),
-           match.numberOfRanges >= 3 {
+           match.numberOfRanges >= 4 {
             let nsCandidate = candidate as NSString
             path = nsCandidate.substring(with: match.range(at: 1))
-            lineNumber = nsCandidate.substring(with: match.range(at: 2))
+            let lineRange = match.range(at: 2).location != NSNotFound
+                ? match.range(at: 2)
+                : match.range(at: 3)
+            if lineRange.location != NSNotFound {
+                lineNumber = nsCandidate.substring(with: lineRange)
+            }
+        }
+
+        guard candidate.hasPrefix("/") || candidate.contains("/") || lineNumber != nil else {
+            return nil
         }
 
         let basename = (path as NSString).lastPathComponent
@@ -520,7 +525,8 @@ enum MarkdownTextFormatter {
         let destination: String
         if let lineNumber {
             label = "\(basename) (line \(lineNumber))"
-            destination = "\(path):\(lineNumber)"
+            let destinationPath = path.contains("/") || path.hasPrefix("/") ? path : "./\(path)"
+            destination = "\(destinationPath):\(lineNumber)"
         } else {
             label = basename
             destination = path

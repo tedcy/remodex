@@ -38,6 +38,55 @@ final class WorkspaceTextFilePreviewTests: XCTestCase {
         XCTAssertEqual(relative?.currentWorkingDirectory, "/repo/App")
     }
 
+    func testParserAcceptsCodePathLineReferences() {
+        let relative = WorkspaceTextFileLinkParser.request(
+            fromDestination: "Sources/App/File.swift:42",
+            currentWorkingDirectory: "/repo"
+        )
+        let hashLine = WorkspaceTextFileLinkParser.request(
+            fromDestination: "Sources/App/File.swift#L43-L50",
+            currentWorkingDirectory: "/repo"
+        )
+        let fileURL = WorkspaceTextFileLinkParser.request(
+            from: URL(string: "file:///repo/Sources/App/File.swift#L44")!,
+            currentWorkingDirectory: "/repo"
+        )
+        let bareFile = WorkspaceTextFileLinkParser.request(
+            fromDestination: "README.md:12",
+            currentWorkingDirectory: "/repo"
+        )
+        let bareFileURL = WorkspaceTextFileLinkParser.request(
+            from: URL(string: "./README.md:13")!,
+            currentWorkingDirectory: "/repo"
+        )
+
+        XCTAssertEqual(relative?.path, "Sources/App/File.swift")
+        XCTAssertEqual(relative?.currentWorkingDirectory, "/repo")
+        XCTAssertEqual(relative?.lineNumber, 42)
+        XCTAssertEqual(hashLine?.path, "Sources/App/File.swift")
+        XCTAssertEqual(hashLine?.lineNumber, 43)
+        XCTAssertEqual(fileURL?.path, "/repo/Sources/App/File.swift")
+        XCTAssertEqual(fileURL?.lineNumber, 44)
+        XCTAssertEqual(bareFile?.path, "README.md")
+        XCTAssertEqual(bareFile?.currentWorkingDirectory, "/repo")
+        XCTAssertEqual(bareFile?.lineNumber, 12)
+        XCTAssertEqual(bareFileURL?.path, "./README.md")
+        XCTAssertEqual(bareFileURL?.currentWorkingDirectory, "/repo")
+        XCTAssertEqual(bareFileURL?.lineNumber, 13)
+    }
+
+    func testMarkdownFormatterLinkifiesCodePathLineReferences() {
+        let rendered = MarkdownTextFormatter.renderableText(
+            from: "Open `Sources/App/File.swift#L42`, `Sources/App/Other.swift:7`, and `README.md:12`.",
+            profile: .assistantProse,
+            usesCache: false
+        )
+
+        XCTAssertTrue(rendered.contains("[File.swift (line 42)](Sources/App/File.swift:42)"))
+        XCTAssertTrue(rendered.contains("[Other.swift (line 7)](Sources/App/Other.swift:7)"))
+        XCTAssertTrue(rendered.contains("[README.md (line 12)](./README.md:12)"))
+    }
+
     func testParserIgnoresExternalAndBareRelativeLinks() {
         XCTAssertNil(WorkspaceTextFileLinkParser.request(
             from: URL(string: "https://example.com/README.md")!,

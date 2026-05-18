@@ -6,6 +6,7 @@
 
 import Foundation
 import SwiftUI
+import UIKit
 
 struct WorkspaceTextFilePreviewRequest: Identifiable, Equatable, Sendable {
     let path: String
@@ -22,16 +23,24 @@ struct WorkspaceTextFilePreviewRequest: Identifiable, Equatable, Sendable {
     }
 }
 
+private struct WorkspaceTextFileLine: Identifiable, Equatable {
+    let number: Int
+    let text: String
+
+    var id: Int { number }
+}
+
 nonisolated enum WorkspaceTextFileLinkParser {
     static func request(
         from url: URL,
         currentWorkingDirectory: String?
     ) -> WorkspaceTextFilePreviewRequest? {
         if url.isFileURL {
-            return request(
-                fromDestination: url.path,
-                currentWorkingDirectory: currentWorkingDirectory
-            )
+            var destination = url.path
+            if let fragmentLineNumber = lineNumber(fromFragment: url.fragment) {
+                destination += "#L\(fragmentLineNumber)"
+            }
+            return request(fromDestination: destination, currentWorkingDirectory: currentWorkingDirectory)
         }
 
         if let scheme = url.scheme?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -56,17 +65,20 @@ nonisolated enum WorkspaceTextFileLinkParser {
             return nil
         }
 
+        var urlFragmentLineNumber: Int?
         if candidate.lowercased().hasPrefix("file://") {
             guard let url = URL(string: candidate), url.isFileURL else {
                 return nil
             }
+            urlFragmentLineNumber = lineNumber(fromFragment: url.fragment)
             candidate = url.path
         } else {
             candidate = candidate.removingPercentEncoding ?? candidate
         }
 
-        let split = splitTrailingLineColumn(from: candidate)
+        let split = splitTrailingLineReference(from: candidate)
         candidate = split.path
+        let lineNumber = urlFragmentLineNumber ?? split.lineNumber
 
         guard !candidate.hasPrefix("//") else {
             return nil
@@ -75,11 +87,11 @@ nonisolated enum WorkspaceTextFileLinkParser {
             return WorkspaceTextFilePreviewRequest(
                 path: candidate,
                 currentWorkingDirectory: currentWorkingDirectory,
-                lineNumber: split.lineNumber
+                lineNumber: lineNumber
             )
         }
 
-        guard candidate.hasPrefix("./") || candidate.hasPrefix("../"),
+        guard isRelativeWorkspacePath(candidate, lineNumber: lineNumber),
               let cwd = currentWorkingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
               !cwd.isEmpty else {
             return nil
@@ -88,28 +100,65 @@ nonisolated enum WorkspaceTextFileLinkParser {
         return WorkspaceTextFilePreviewRequest(
             path: candidate,
             currentWorkingDirectory: cwd,
-            lineNumber: split.lineNumber
+            lineNumber: lineNumber
         )
     }
 
-    private static func splitTrailingLineColumn(from value: String) -> (path: String, lineNumber: Int?) {
+    private static func splitTrailingLineReference(from value: String) -> (path: String, lineNumber: Int?) {
         let nsValue = value as NSString
         let fullRange = NSRange(location: 0, length: nsValue.length)
-        let pattern = #"^(.+):(\d+)(?::\d+)?$"#
+        let pattern = #"^(.+?)(?::(\d+)(?::\d+)?|#L(\d+)(?:-L?\d+)?)$"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: value, range: fullRange),
-              match.numberOfRanges >= 3 else {
+              match.numberOfRanges >= 4 else {
             return (value, nil)
         }
 
         let pathValue = nsValue.substring(with: match.range(at: 1))
+        let lineRange = match.range(at: 2).location != NSNotFound
+            ? match.range(at: 2)
+            : match.range(at: 3)
         guard !pathValue.isEmpty,
-              let lineNumber = Int(nsValue.substring(with: match.range(at: 2))),
+              lineRange.location != NSNotFound,
+              let lineNumber = Int(nsValue.substring(with: lineRange)),
               lineNumber > 0 else {
             return (value, nil)
         }
 
         return (pathValue, lineNumber)
+    }
+
+    private static func lineNumber(fromFragment fragment: String?) -> Int? {
+        guard let fragment, !fragment.isEmpty else {
+            return nil
+        }
+
+        let nsFragment = fragment as NSString
+        let fullRange = NSRange(location: 0, length: nsFragment.length)
+        let pattern = #"^L(\d+)(?:-L?\d+)?$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: fragment, range: fullRange),
+              match.numberOfRanges >= 2,
+              let lineNumber = Int(nsFragment.substring(with: match.range(at: 1))),
+              lineNumber > 0 else {
+            return nil
+        }
+
+        return lineNumber
+    }
+
+    private static func isRelativeWorkspacePath(_ candidate: String, lineNumber: Int?) -> Bool {
+        candidate.hasPrefix("./")
+            || candidate.hasPrefix("../")
+            || (candidate.contains("/") && !candidate.hasPrefix("~"))
+            || (lineNumber != nil && isBareFileName(candidate))
+    }
+
+    private static func isBareFileName(_ candidate: String) -> Bool {
+        !candidate.contains("/")
+            && !candidate.contains("\\")
+            && !candidate.hasPrefix("~")
+            && !((candidate as NSString).pathExtension.isEmpty)
     }
 }
 
@@ -196,7 +245,7 @@ struct WorkspaceTextFilePreviewScreen: View {
 
     @ViewBuilder
     private func previewContent(_ result: WorkspaceTextFileReadResult) -> some View {
-        if result.isMarkdown {
+        if result.isMarkdown, request.lineNumber == nil {
             ScrollView {
                 MarkdownTextView(
                     text: result.text,
@@ -208,13 +257,110 @@ struct WorkspaceTextFilePreviewScreen: View {
                 .padding(18)
             }
         } else {
-            ScrollView([.vertical, .horizontal]) {
-                Text(result.text)
-                    .font(AppFont.mono(.caption))
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: true, vertical: true)
-                    .padding(18)
+            codePreviewContent(result)
+        }
+    }
+
+    @ViewBuilder
+    private func codePreviewContent(_ result: WorkspaceTextFileReadResult) -> some View {
+        let lines = Self.codeLines(from: result.text)
+        let targetLineNumber = request.lineNumber.flatMap { requestedLine in
+            lines.contains { $0.number == requestedLine } ? requestedLine : nil
+        }
+
+        if let targetLineNumber {
+            GeometryReader { geometry in
+                let lineNumberWidth = Self.lineNumberColumnWidth(for: lines.count)
+                let contentWidth = max(
+                    geometry.size.width,
+                    Self.codePreviewContentWidth(lines: lines, lineNumberWidth: lineNumberWidth)
+                )
+
+                ScrollView(.horizontal) {
+                    ScrollViewReader { proxy in
+                        ScrollView(.vertical) {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(lines) { line in
+                                    codeLineRow(
+                                        line,
+                                        lineNumberWidth: lineNumberWidth,
+                                        isTarget: line.number == targetLineNumber
+                                    )
+                                    .id(line.number)
+                                }
+                            }
+                            .frame(width: contentWidth, alignment: .leading)
+                            .padding(.vertical, 8)
+                        }
+                        .frame(width: contentWidth, height: geometry.size.height)
+                        .onAppear {
+                            scrollToTargetLine(targetLineNumber, proxy: proxy)
+                        }
+                        .onChange(of: targetLineNumber) { _, nextTarget in
+                            scrollToTargetLine(nextTarget, proxy: proxy)
+                        }
+                    }
+                    .frame(width: contentWidth, height: geometry.size.height)
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+            }
+        } else {
+            plainCodePreviewContent(result.text)
+        }
+    }
+
+    private func plainCodePreviewContent(_ text: String) -> some View {
+        ScrollView([.vertical, .horizontal]) {
+            Text(text.isEmpty ? " " : text)
+                .font(AppFont.mono(.caption))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: true, vertical: true)
+                .padding(18)
+        }
+    }
+
+    private func codeLineRow(
+        _ line: WorkspaceTextFileLine,
+        lineNumberWidth: CGFloat,
+        isTarget: Bool
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("\(line.number)")
+                .font(AppFont.mono(.caption2))
+                .foregroundStyle(isTarget ? .primary : .tertiary)
+                .frame(width: lineNumberWidth, alignment: .trailing)
+                .textSelection(.disabled)
+
+            Text(line.text.isEmpty ? " " : line.text)
+                .font(AppFont.mono(.caption))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: true, vertical: true)
+        }
+        .padding(.vertical, 2)
+        .padding(.leading, 18)
+        .padding(.trailing, 14)
+        .background {
+            if isTarget {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.14))
+            }
+        }
+    }
+
+    private func scrollToTargetLine(
+        _ lineNumber: Int?,
+        proxy: ScrollViewProxy
+    ) {
+        guard let lineNumber else {
+            return
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            withAnimation(.easeInOut(duration: 0.24)) {
+                proxy.scrollTo(lineNumber, anchor: .top)
             }
         }
     }
@@ -290,5 +436,37 @@ struct WorkspaceTextFilePreviewScreen: View {
 
     private static func formattedByteCount(_ byteCount: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+    }
+
+    private static func codeLines(from text: String) -> [WorkspaceTextFileLine] {
+        let rawLines = text.components(separatedBy: .newlines)
+        let displayLines = rawLines.isEmpty ? [""] : rawLines
+        return displayLines.enumerated().map { index, line in
+            WorkspaceTextFileLine(number: index + 1, text: line)
+        }
+    }
+
+    private static func lineNumberColumnWidth(for lineCount: Int) -> CGFloat {
+        let digits = max(2, String(max(1, lineCount)).count)
+        return CGFloat(digits) * 8 + 12
+    }
+
+    private static func codePreviewContentWidth(
+        lines: [WorkspaceTextFileLine],
+        lineNumberWidth: CGFloat
+    ) -> CGFloat {
+        let textFont = AppFont.monoUIFont(size: 11, textStyle: .caption1)
+        let widestCodeText = lines
+            .lazy
+            .map { line in
+                codeLineTextWidth(line.text.isEmpty ? " " : line.text, font: textFont)
+            }
+            .max() ?? 0
+
+        return ceil(18 + lineNumberWidth + 12 + widestCodeText + 14)
+    }
+
+    private static func codeLineTextWidth(_ text: String, font: UIFont) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: font]).width
     }
 }

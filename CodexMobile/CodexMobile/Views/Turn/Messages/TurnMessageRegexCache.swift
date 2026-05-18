@@ -21,7 +21,7 @@ nonisolated enum TurnMessageRegexCache {
     static let markdownLinkToken = try? NSRegularExpression(pattern: #"^\[([^\]]+)\]\(([^)]+)\)$"#)
     static let heading = try? NSRegularExpression(pattern: #"(?m)^#{1,6}\s+(.+)$"#)
     static let genericPath = try? NSRegularExpression(
-        pattern: #"(?:\/[^\s`"'<>]+|~\/[^\s`"'<>]+|\.{1,2}\/[^\s`"'<>]+|[A-Za-z0-9._+\-]+(?:\/[A-Za-z0-9._+\-]+)+)(?::\d+(?::\d+)?)?"#
+        pattern: #"(?:(?:\/[^\s`"'<>#]+|~\/[^\s`"'<>#]+|\.{1,2}\/[^\s`"'<>#]+|[A-Za-z0-9._+\-]+(?:\/[A-Za-z0-9._+\-]+)+)(?::\d+(?::\d+)?|#L\d+(?:-L?\d+)?)?|[A-Za-z0-9._+\-]+\.[A-Za-z0-9]+(?::\d+(?::\d+)?|#L\d+(?:-L?\d+)?))"#
     )
     static let inlineCodeContent = try? NSRegularExpression(pattern: #"`([^`\n]+)`"#)
     static let markdownLinkRange = try? NSRegularExpression(pattern: #"\[[^\]]+\]\([^)]+\)"#)
@@ -30,7 +30,7 @@ nonisolated enum TurnMessageRegexCache {
         // File mentions may contain spaces, but skills remain single-token `$name` values.
         pattern: #"(?<![A-Za-z0-9_])([@$])((?:[^@$\n]+?\.[A-Za-z0-9]+)|(?:[^\s@$]+))(?=[\s,.;:!?)\]}>]|$)"#
     )
-    static let filenameWithLine = try? NSRegularExpression(pattern: #"^(.*\.[A-Za-z0-9]+):(\d+)(?::\d+)?$"#)
+    static let filenameWithLine = try? NSRegularExpression(pattern: #"^(.*\.[A-Za-z0-9]+)(?::(\d+)(?::\d+)?|#L(\d+)(?:-L?\d+)?)$"#)
     static let inlineEditingRow = try? NSRegularExpression(
         pattern: #"(?i)^(edited|updated|added|created|deleted|removed|renamed|moved)\s+.+\s+[+\u{FF0B}]\s*\d+\s*[-\u{2212}\u{2013}\u{2014}\u{FE63}\u{FF0D}]\s*\d+\s*$"#
     )
