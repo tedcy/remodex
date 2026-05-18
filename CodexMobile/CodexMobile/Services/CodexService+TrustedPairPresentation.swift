@@ -14,6 +14,15 @@ struct CodexTrustedPairPresentation: Equatable, Sendable {
     let detail: String?
 }
 
+struct CodexTrustedHostPresentation: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let systemName: String?
+    let detail: String?
+    let relayHost: String?
+    let isActive: Bool
+}
+
 enum SidebarComputerNicknameStore {
     private static let keyPrefix = "codex.sidebarComputerNickname."
 
@@ -73,6 +82,43 @@ extension CodexService {
             systemName: nickname.isEmpty ? nil : systemName,
             detail: trustedPairDetail(displayName: hostName, fingerprint: hostFingerprint)
         )
+    }
+
+    // Lists all remembered trusted hosts while keeping the selected host first.
+    var trustedHostPresentations: [CodexTrustedHostPresentation] {
+        trustedMacRegistry.records.values
+            .sorted { lhs, rhs in
+                if isActiveTrustedHost(lhs.macDeviceId) != isActiveTrustedHost(rhs.macDeviceId) {
+                    return isActiveTrustedHost(lhs.macDeviceId)
+                }
+
+                let lhsDate = lhs.lastUsedAt ?? lhs.lastResolvedAt ?? lhs.lastPairedAt
+                let rhsDate = rhs.lastUsedAt ?? rhs.lastResolvedAt ?? rhs.lastPairedAt
+                return lhsDate > rhsDate
+            }
+            .map { trustedHostPresentation(for: $0) }
+    }
+
+    // Makes one trusted host the reconnect target. It does not auto-connect; existing reconnect UI owns that flow.
+    func selectTrustedHost(deviceId: String) async {
+        guard let trustedMac = trustedMacRegistry.records[deviceId],
+              !isActiveTrustedHost(deviceId) else {
+            return
+        }
+
+        shouldAutoReconnectOnForeground = false
+        connectionRecoveryState = .idle
+        lastErrorMessage = nil
+        cancelTrustedSessionResolve()
+
+        if isConnecting || isConnected {
+            await disconnect()
+        }
+
+        applySelectedTrustedHost(trustedMac)
+        resetThreadRuntimeStateForServerSwitch()
+        threads = []
+        restoreTrustedPairPresentationState()
     }
 }
 
@@ -138,5 +184,94 @@ private extension CodexService {
             return nil
         }
         return value
+    }
+
+    func trustedHostPresentation(for record: CodexTrustedMacRecord) -> CodexTrustedHostPresentation {
+        let systemName = trustedHostSystemName(for: record)
+        let nickname = SidebarComputerNicknameStore.nickname(for: record.macDeviceId)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveName = nickname.isEmpty ? systemName : nickname
+        let fingerprint = codexSecureFingerprint(for: record.macIdentityPublicKey)
+        let relayHost = trustedHostRelayHost(from: record.relayURL)
+
+        var detailParts: [String] = []
+        if let relayHost {
+            detailParts.append(relayHost)
+        }
+        detailParts.append(fingerprint)
+
+        return CodexTrustedHostPresentation(
+            id: record.macDeviceId,
+            name: effectiveName,
+            systemName: nickname.isEmpty ? nil : systemName,
+            detail: detailParts.joined(separator: " · "),
+            relayHost: relayHost,
+            isActive: isActiveTrustedHost(record.macDeviceId)
+        )
+    }
+
+    func trustedHostSystemName(for record: CodexTrustedMacRecord) -> String {
+        if let displayName = nonEmptyTrimmedString(record.displayName) {
+            return displayName
+        }
+
+        return "Host \(codexSecureFingerprint(for: record.macIdentityPublicKey))"
+    }
+
+    func trustedHostRelayHost(from relayURL: String?) -> String? {
+        guard let relayURL = nonEmptyTrimmedString(relayURL),
+              let host = URLComponents(string: relayURL)?.host,
+              !host.isEmpty else {
+            return nil
+        }
+
+        return host
+    }
+
+    func isActiveTrustedHost(_ deviceId: String) -> Bool {
+        if normalizedRelayMacDeviceId == deviceId {
+            return true
+        }
+
+        return normalizedRelayMacDeviceId == nil
+            && preferredTrustedMacDeviceId == deviceId
+    }
+
+    func applySelectedTrustedHost(_ record: CodexTrustedMacRecord) {
+        let relayURL = nonEmptyTrimmedString(record.relayURL)
+        let lastResolvedSessionId = nonEmptyTrimmedString(record.lastResolvedSessionId)
+
+        if let lastResolvedSessionId {
+            SecureStore.writeString(lastResolvedSessionId, for: CodexSecureKeys.relaySessionId)
+        } else {
+            SecureStore.deleteValue(for: CodexSecureKeys.relaySessionId)
+        }
+
+        if let relayURL {
+            SecureStore.writeString(relayURL, for: CodexSecureKeys.relayUrl)
+        } else {
+            SecureStore.deleteValue(for: CodexSecureKeys.relayUrl)
+        }
+
+        SecureStore.writeString(record.macDeviceId, for: CodexSecureKeys.relayMacDeviceId)
+        SecureStore.writeString(record.macIdentityPublicKey, for: CodexSecureKeys.relayMacIdentityPublicKey)
+        SecureStore.writeString(String(codexSecureProtocolVersion), for: CodexSecureKeys.relayProtocolVersion)
+        SecureStore.writeString("0", for: CodexSecureKeys.relayLastAppliedBridgeOutboundSeq)
+        SecureStore.writeString(record.macDeviceId, for: CodexSecureKeys.lastTrustedMacDeviceId)
+
+        relaySessionId = lastResolvedSessionId
+        relayUrl = relayURL
+        relayMacDeviceId = record.macDeviceId
+        relayMacIdentityPublicKey = record.macIdentityPublicKey
+        relayProtocolVersion = codexSecureProtocolVersion
+        lastAppliedBridgeOutboundSeq = 0
+        lastTrustedMacDeviceId = record.macDeviceId
+        shouldForceQRBootstrapOnNextHandshake = false
+        trustedReconnectFailureCount = 0
+
+        var updatedRecord = record
+        updatedRecord.lastUsedAt = Date()
+        trustedMacRegistry.records[record.macDeviceId] = updatedRecord
+        SecureStore.writeCodable(trustedMacRegistry, for: CodexSecureKeys.trustedMacRegistry)
     }
 }

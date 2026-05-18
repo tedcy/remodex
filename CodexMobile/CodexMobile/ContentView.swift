@@ -85,6 +85,14 @@ struct ContentView: View {
     // Splits lifecycle wiring from presentation modifiers so SwiftUI does not have to type-check one giant body chain.
     private var rootContentWithLifecycleObservers: some View {
         rootContent
+            .environment(\.newConnectionAction, {
+                presentManualScannerAfterStoppingReconnect()
+            })
+            .environment(\.reconnectAction, {
+                Task {
+                    await viewModel.toggleConnection(codex: codex)
+                }
+            })
             // Only resume saved-pairing recovery after onboarding is done and the manual scanner is not in control.
             .task {
                 guard hasSeenOnboarding, !isShowingManualScanner else {

@@ -651,14 +651,16 @@ private extension CodexService {
 
     func trustMac(deviceId: String, publicKey: String, relayURL: String?, displayName: String?) {
         let existing = trustedMacRegistry.records[deviceId]
+        let resolvedSessionId = normalizedRelaySessionId ?? existing?.lastResolvedSessionId
+        let resolvedAt = normalizedRelaySessionId == nil ? existing?.lastResolvedAt : Date()
         trustedMacRegistry.records[deviceId] = CodexTrustedMacRecord(
             macDeviceId: deviceId,
             macIdentityPublicKey: publicKey,
             lastPairedAt: Date(),
             relayURL: relayURL ?? existing?.relayURL,
             displayName: displayName ?? existing?.displayName,
-            lastResolvedSessionId: existing?.lastResolvedSessionId,
-            lastResolvedAt: existing?.lastResolvedAt,
+            lastResolvedSessionId: resolvedSessionId,
+            lastResolvedAt: resolvedAt,
             lastUsedAt: Date()
         )
         SecureStore.writeCodable(trustedMacRegistry, for: CodexSecureKeys.trustedMacRegistry)

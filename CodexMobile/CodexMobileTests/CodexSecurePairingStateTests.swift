@@ -138,6 +138,102 @@ final class CodexSecurePairingStateTests: XCTestCase {
         )
     }
 
+    func testSelectingTrustedHostChangesReconnectTargetAndPersistsSelection() async {
+        let service = CodexService()
+        let firstMacDeviceID = "mac-\(UUID().uuidString)"
+        let secondMacDeviceID = "mac-\(UUID().uuidString)"
+        let firstPublicKey = Data(repeating: 11, count: 32).base64EncodedString()
+        let secondPublicKey = Data(repeating: 12, count: 32).base64EncodedString()
+        let firstRelayURL = "wss://first.example.com/relay"
+        let secondRelayURL = "wss://second.example.com/relay"
+
+        service.trustedMacRegistry.records[firstMacDeviceID] = CodexTrustedMacRecord(
+            macDeviceId: firstMacDeviceID,
+            macIdentityPublicKey: firstPublicKey,
+            lastPairedAt: Date().addingTimeInterval(-120),
+            relayURL: firstRelayURL,
+            displayName: "First Host",
+            lastResolvedSessionId: "first-session",
+            lastResolvedAt: Date().addingTimeInterval(-100),
+            lastUsedAt: Date().addingTimeInterval(-80)
+        )
+        service.trustedMacRegistry.records[secondMacDeviceID] = CodexTrustedMacRecord(
+            macDeviceId: secondMacDeviceID,
+            macIdentityPublicKey: secondPublicKey,
+            lastPairedAt: Date().addingTimeInterval(-60),
+            relayURL: secondRelayURL,
+            displayName: "Second Host",
+            lastResolvedSessionId: "second-session",
+            lastResolvedAt: Date().addingTimeInterval(-40),
+            lastUsedAt: Date().addingTimeInterval(-20)
+        )
+
+        service.lastTrustedMacDeviceId = firstMacDeviceID
+        service.relaySessionId = "first-session"
+        service.relayUrl = firstRelayURL
+        service.relayMacDeviceId = firstMacDeviceID
+        service.relayMacIdentityPublicKey = firstPublicKey
+        service.lastAppliedBridgeOutboundSeq = 31
+        SecureStore.writeString("31", for: CodexSecureKeys.relayLastAppliedBridgeOutboundSeq)
+
+        await service.selectTrustedHost(deviceId: secondMacDeviceID)
+
+        XCTAssertEqual(service.normalizedRelaySessionId, "second-session")
+        XCTAssertEqual(service.normalizedRelayURL, secondRelayURL)
+        XCTAssertEqual(service.normalizedRelayMacDeviceId, secondMacDeviceID)
+        XCTAssertEqual(service.normalizedRelayMacIdentityPublicKey, secondPublicKey)
+        XCTAssertEqual(service.normalizedLastTrustedMacDeviceId, secondMacDeviceID)
+        XCTAssertEqual(service.lastAppliedBridgeOutboundSeq, 0)
+        XCTAssertEqual(service.secureConnectionState, .trustedMac)
+        XCTAssertEqual(SecureStore.readString(for: CodexSecureKeys.relaySessionId), "second-session")
+        XCTAssertEqual(SecureStore.readString(for: CodexSecureKeys.relayUrl), secondRelayURL)
+        XCTAssertEqual(SecureStore.readString(for: CodexSecureKeys.lastTrustedMacDeviceId), secondMacDeviceID)
+        XCTAssertEqual(SecureStore.readString(for: CodexSecureKeys.relayLastAppliedBridgeOutboundSeq), "0")
+        XCTAssertEqual(service.trustedHostPresentations.first?.id, secondMacDeviceID)
+        XCTAssertTrue(service.trustedHostPresentations.first?.isActive ?? false)
+    }
+
+    func testSelectingTrustedHostWithoutSavedSessionKeepsTrustedReconnectCandidate() async {
+        let service = CodexService()
+        let firstMacDeviceID = "mac-\(UUID().uuidString)"
+        let secondMacDeviceID = "mac-\(UUID().uuidString)"
+        let firstPublicKey = Data(repeating: 13, count: 32).base64EncodedString()
+        let secondPublicKey = Data(repeating: 14, count: 32).base64EncodedString()
+        let secondRelayURL = "wss://second.example.com/relay"
+
+        service.trustedMacRegistry.records[firstMacDeviceID] = CodexTrustedMacRecord(
+            macDeviceId: firstMacDeviceID,
+            macIdentityPublicKey: firstPublicKey,
+            lastPairedAt: Date().addingTimeInterval(-120),
+            relayURL: "wss://first.example.com/relay",
+            lastResolvedSessionId: "first-session"
+        )
+        service.trustedMacRegistry.records[secondMacDeviceID] = CodexTrustedMacRecord(
+            macDeviceId: secondMacDeviceID,
+            macIdentityPublicKey: secondPublicKey,
+            lastPairedAt: Date().addingTimeInterval(-60),
+            relayURL: secondRelayURL,
+            displayName: "Second Host"
+        )
+
+        service.lastTrustedMacDeviceId = firstMacDeviceID
+        service.relaySessionId = "first-session"
+        service.relayUrl = "wss://first.example.com/relay"
+        service.relayMacDeviceId = firstMacDeviceID
+        service.relayMacIdentityPublicKey = firstPublicKey
+
+        await service.selectTrustedHost(deviceId: secondMacDeviceID)
+
+        XCTAssertNil(service.normalizedRelaySessionId)
+        XCTAssertFalse(service.hasSavedRelaySession)
+        XCTAssertTrue(service.hasTrustedMacReconnectCandidate)
+        XCTAssertEqual(service.normalizedRelayURL, secondRelayURL)
+        XCTAssertEqual(service.normalizedRelayMacDeviceId, secondMacDeviceID)
+        XCTAssertEqual(service.normalizedLastTrustedMacDeviceId, secondMacDeviceID)
+        XCTAssertNil(SecureStore.readString(for: CodexSecureKeys.relaySessionId))
+        XCTAssertEqual(SecureStore.readString(for: CodexSecureKeys.relayUrl), secondRelayURL)
+    }
+
     // Clears the persisted relay session keys touched by secure reconnect tests.
     private func clearStoredSecureRelayState() {
         SecureStore.deleteValue(for: CodexSecureKeys.relaySessionId)
