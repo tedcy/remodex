@@ -25,6 +25,7 @@ build/
 CodexMobile/BuildSupport/PrivateOverrides.xcconfig
 phodex-bridge/src/private-defaults.json
 security_best_practices_report.md
+Docs/remodex-ios-local-signing.private.md
 
 # Build artifacts
 *.swp
