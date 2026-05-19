@@ -538,8 +538,9 @@ function usesSipsImagePreview() {
 async function downsampleImageWithSips(imagePath, maxPixelDimension, timeoutMs = IMAGE_PREVIEW_TOOL_TIMEOUT_MS) {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remodex-image-preview-"));
   const outputPath = path.join(tempDir, `preview${path.extname(imagePath) || ".png"}`);
+  const sipsBin = process.env.REMODEX_SIPS_BIN || "sips";
   try {
-    await execFileAsync("sips", ["-Z", String(maxPixelDimension), imagePath, "--out", outputPath], {
+    await execFileAsync(sipsBin, ["-Z", String(maxPixelDimension), imagePath, "--out", outputPath], {
       timeout: Math.max(1, Math.floor(timeoutMs)),
       maxBuffer: 1024 * 1024,
     });

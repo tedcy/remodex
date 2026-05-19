@@ -135,19 +135,19 @@ test("workspace/readImage retries smaller previews when the first preview is sti
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-image-"));
   const fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-fake-sips-"));
   const fakeSipsLog = path.join(tempDir, "sips.log");
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath || ""}`;
+  const previousSipsBin = process.env.REMODEX_SIPS_BIN;
   t.after(() => {
-    if (previousPath == null) {
-      delete process.env.PATH;
+    if (previousSipsBin == null) {
+      delete process.env.REMODEX_SIPS_BIN;
     } else {
-      process.env.PATH = previousPath;
+      process.env.REMODEX_SIPS_BIN = previousSipsBin;
     }
     fs.rmSync(tempDir, { recursive: true, force: true });
     fs.rmSync(fakeBinDir, { recursive: true, force: true });
   });
 
   const fakeSipsPath = path.join(fakeBinDir, "sips");
+  process.env.REMODEX_SIPS_BIN = fakeSipsPath;
   fs.writeFileSync(
     fakeSipsPath,
     `#!/usr/bin/env node
@@ -182,19 +182,19 @@ test("workspace/readImage stops preview retries when sips times out", async (t) 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-image-"));
   const fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-fake-sips-timeout-"));
   const fakeSipsLog = path.join(tempDir, "sips-timeout.log");
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath || ""}`;
+  const previousSipsBin = process.env.REMODEX_SIPS_BIN;
   t.after(() => {
-    if (previousPath == null) {
-      delete process.env.PATH;
+    if (previousSipsBin == null) {
+      delete process.env.REMODEX_SIPS_BIN;
     } else {
-      process.env.PATH = previousPath;
+      process.env.REMODEX_SIPS_BIN = previousSipsBin;
     }
     fs.rmSync(tempDir, { recursive: true, force: true });
     fs.rmSync(fakeBinDir, { recursive: true, force: true });
   });
 
   const fakeSipsPath = path.join(fakeBinDir, "sips");
+  process.env.REMODEX_SIPS_BIN = fakeSipsPath;
   fs.writeFileSync(
     fakeSipsPath,
     `#!/usr/bin/env node
