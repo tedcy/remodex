@@ -44,6 +44,7 @@
 		B1C2D3E4F5061728394A5B6C /* CodexServiceIncomingCommandExecutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D2E3F40516273849A5B6C7 /* CodexServiceIncomingCommandExecutionTests.swift */; };
 		B3C4D5E6F708192A3B4C5D6E /* CodexPlanModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3C4D5E6F708192A3B4C5D6F /* CodexPlanModeTests.swift */; };
 		B7A1C2D3E4F5061728394051 /* SidebarThreadGroupingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A1C2D3E4F5061728394052 /* SidebarThreadGroupingTests.swift */; };
+		C0DEC0DE0000000000000001 /* CodexServiceCatchupRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DE0000000000000002 /* CodexServiceCatchupRecoveryTests.swift */; };
 		C04E214B2F71D34100AA3193 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = C04E214A2F71D34100AA3193 /* RevenueCat */; };
 		C04E214D2F71D4DB00AA3193 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C04E214C2F71D4DB00AA3193 /* StoreKit.framework */; };
 		C078C1A22F79000100BEEF01 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = C078C1A12F79000100BEEF01 /* Citadel */; };
@@ -118,6 +119,7 @@
 		C09A76AE2F4B8D7B003B3F3A /* CodexMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0B9CCCCC45E47616AB452FA /* RemodexMenuBarApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RemodexMenuBarApp.swift; sourceTree = "<group>"; };
 		C1D2E3F40516273849A5B6C7 /* CodexServiceIncomingCommandExecutionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CodexServiceIncomingCommandExecutionTests.swift; sourceTree = "<group>"; };
+		C0DEC0DE0000000000000002 /* CodexServiceCatchupRecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CodexServiceCatchupRecoveryTests.swift; sourceTree = "<group>"; };
 		C9CD1EA13B728103A5654EEA /* BridgeControlModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BridgeControlModels.swift; sourceTree = "<group>"; };
 		C7F1A2B3C4D5E6F708192A3B /* WorkspaceTextFilePreviewTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorkspaceTextFilePreviewTests.swift; sourceTree = "<group>"; };
 		D0C0FFEE0000000000000002 /* TextualMarkdownRenderingRegressionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TextualMarkdownRenderingRegressionTests.swift; sourceTree = "<group>"; };
@@ -202,6 +204,7 @@
 			children = (
 				02C96CD0916A43F38184398D /* AssistantTurnEndActionVisibilityTests.swift */,
 				22B3C4D5E6F708192A3B4C5E /* CodexFuzzyFileSearchDecodeTests.swift */,
+				C0DEC0DE0000000000000002 /* CodexServiceCatchupRecoveryTests.swift */,
 				C1D2E3F40516273849A5B6C7 /* CodexServiceIncomingCommandExecutionTests.swift */,
 				8D1F2A3B4C5D6E7F8091A2B4 /* CodexServiceConnectionErrorTests.swift */,
 				8F1A2B3C4D5E6F708192A3B5 /* CodexPushNotificationRegistrationTests.swift */,
@@ -526,6 +529,7 @@
 			files = (
 				7EFA3E8309EF41CA902C7A67 /* AssistantTurnEndActionVisibilityTests.swift in Sources */,
 				22B3C4D5E6F708192A3B4C5D /* CodexFuzzyFileSearchDecodeTests.swift in Sources */,
+				C0DEC0DE0000000000000001 /* CodexServiceCatchupRecoveryTests.swift in Sources */,
 				B1C2D3E4F5061728394A5B6C /* CodexServiceIncomingCommandExecutionTests.swift in Sources */,
 				8D1F2A3B4C5D6E7F8091A2B3 /* CodexServiceConnectionErrorTests.swift in Sources */,
 				8F1A2B3C4D5E6F708192A3B4 /* CodexPushNotificationRegistrationTests.swift in Sources */,

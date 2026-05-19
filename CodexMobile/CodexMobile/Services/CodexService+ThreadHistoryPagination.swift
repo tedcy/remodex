@@ -210,12 +210,19 @@ extension CodexService {
             return
         }
 
+        let refreshGeneration = currentPerThreadRefreshGeneration(for: threadId)
+        func isCurrentOlderHistoryLoad() -> Bool {
+            !Task.isCancelled && isPerThreadRefreshCurrent(for: threadId, generation: refreshGeneration)
+        }
+
         loadingOlderThreadHistoryIDs.insert(threadId)
         olderHistoryLoadErrorByThreadID.removeValue(forKey: threadId)
         refreshThreadTimelineState(for: threadId)
         defer {
-            loadingOlderThreadHistoryIDs.remove(threadId)
-            refreshThreadTimelineState(for: threadId)
+            if isPerThreadRefreshCurrent(for: threadId, generation: refreshGeneration) {
+                loadingOlderThreadHistoryIDs.remove(threadId)
+                refreshThreadTimelineState(for: threadId)
+            }
         }
 
         do {
@@ -234,7 +241,7 @@ extension CodexService {
                 let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
                 let hasNextCursor = cursorHasValue(page.nextCursor)
                 debugSyncLog("thread/turns/list older thread=\(threadId) limit=\(ThreadHistoryHydrationPolicy.olderTurnPageSize) turns=\(page.turns.count) hasNextCursor=\(hasNextCursor) elapsedMs=\(elapsedMs)")
-                guard !Task.isCancelled else {
+                guard isCurrentOlderHistoryLoad() else {
                     return
                 }
 
@@ -306,7 +313,7 @@ extension CodexService {
                     preferRecentWindow: false
                 )
 
-                guard !Task.isCancelled else {
+                guard isCurrentOlderHistoryLoad() else {
                     return
                 }
 
@@ -355,6 +362,9 @@ extension CodexService {
         } catch is CancellationError {
             return
         } catch {
+            guard isCurrentOlderHistoryLoad() else {
+                return
+            }
             if consumeUnsupportedTurnPagination(error, attemptedMethod: "thread/turns/list") {
                 return
             }

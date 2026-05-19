@@ -425,6 +425,72 @@ final class CodexServiceCatchupRecoveryTests: XCTestCase {
         XCTAssertEqual(state.renderSnapshot.messages.map(\.text), ["stale local"])
     }
 
+    func testReloadThreadHistoryFromServerIgnoresStaleOlderPageCompletion() async throws {
+        let service = makeService()
+        let threadID = "thread-reload-stale-older-page"
+        let recentMessage = CodexMessage(
+            threadId: threadID,
+            role: .assistant,
+            text: "recent cached",
+            itemId: "recent-cached",
+            orderIndex: 100
+        )
+
+        service.isConnected = true
+        service.isInitialized = true
+        service.supportsTurnPagination = true
+        service.upsertThread(CodexThread(id: threadID, title: "Reload"))
+        service.messagesByThread[threadID] = [recentMessage]
+        service.hydratedThreadIDs.insert(threadID)
+        service.initialTurnsLoadedByThreadID.insert(threadID)
+        service.olderThreadHistoryCursorByThreadID[threadID] = .string("older-cursor")
+        service.threadTimelineProjectionLimitByThreadID[threadID] = TurnTimelineProjectionPolicy.initialMessageLimit
+
+        var olderPageStarted = false
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/turns/list")
+            XCTAssertEqual(params?.objectValue?["threadId"]?.stringValue, threadID)
+
+            if params?.objectValue?["cursor"]?.stringValue == "older-cursor" {
+                olderPageStarted = true
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                return self.threadTurnsListResponse(
+                    threadID: threadID,
+                    itemID: "stale-older",
+                    text: "stale older",
+                    nextCursor: .string("stale-next")
+                )
+            }
+
+            XCTAssertNil(params?.objectValue?["cursor"])
+            return self.threadTurnsListResponse(
+                threadID: threadID,
+                itemID: "server-fresh",
+                text: "server fresh",
+                nextCursor: .null
+            )
+        }
+
+        let olderLoadTask = Task { @MainActor in
+            await service.loadOlderThreadHistoryPage(threadId: threadID)
+        }
+
+        for _ in 0..<20 where !olderPageStarted {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(olderPageStarted)
+
+        let outcome = try await service.reloadThreadHistoryFromServer(threadId: threadID)
+        await olderLoadTask.value
+
+        XCTAssertEqual(outcome, .loadedPaginatedWindow)
+        XCTAssertEqual(service.messages(for: threadID).map(\.text), ["server fresh"])
+        XCTAssertFalse(service.messages(for: threadID).contains { $0.text == "stale older" })
+        XCTAssertNotEqual(service.olderThreadHistoryCursorByThreadID[threadID]?.stringValue, "stale-next")
+        XCTAssertNil(service.olderHistoryLoadErrorByThreadID[threadID])
+        XCTAssertFalse(service.loadingOlderThreadHistoryIDs.contains(threadID))
+    }
+
     func testReloadThreadHistoryFromServerRejectsRunningThreadWithoutClearingCache() async {
         let service = makeService()
         let threadID = "thread-reload-running"
@@ -484,6 +550,34 @@ final class CodexServiceCatchupRecoveryTests: XCTestCase {
                         ]),
                     ]),
                 ]),
+            ]),
+            includeJSONRPC: false
+        )
+    }
+
+    private func threadTurnsListResponse(
+        threadID: String,
+        itemID: String,
+        text: String,
+        nextCursor: JSONValue
+    ) -> RPCMessage {
+        RPCMessage(
+            id: .string(UUID().uuidString),
+            result: .object([
+                "data": .array([
+                    .object([
+                        "id": .string("turn-\(itemID)"),
+                        "status": .string("completed"),
+                        "items": .array([
+                            .object([
+                                "id": .string(itemID),
+                                "type": .string("assistantMessage"),
+                                "message": .string(text),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+                "nextCursor": nextCursor,
             ]),
             includeJSONRPC: false
         )
