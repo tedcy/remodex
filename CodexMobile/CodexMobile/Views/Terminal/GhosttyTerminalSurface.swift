@@ -68,6 +68,7 @@ struct RemodexTerminalTheme: Equatable {
     }
 }
 
+#if !targetEnvironment(simulator)
 struct GhosttyTerminalSurface: UIViewRepresentable {
     let terminalKey: String
     let buffer: Data
@@ -101,3 +102,4 @@ struct GhosttyTerminalSurface: UIViewRepresentable {
         view.initialBuffer = buffer
     }
 }
+#endif

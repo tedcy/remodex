@@ -4,6 +4,7 @@
 // Exports: GhosttyTerminalView
 // Depends on: GhosttyKit, UIKit, QuartzCore
 
+#if !targetEnvironment(simulator)
 import Foundation
 import GhosttyKit
 import QuartzCore
@@ -1473,3 +1474,4 @@ final class GhosttyTerminalView: UIView, UITextFieldDelegate, UIGestureRecognize
         }
     }
 }
+#endif

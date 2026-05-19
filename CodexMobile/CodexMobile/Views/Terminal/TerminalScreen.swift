@@ -285,6 +285,9 @@ struct TerminalScreen: View {
                 action: showConnectionEditor
             )
         } else {
+            #if targetEnvironment(simulator)
+            fallbackTerminalSurface
+            #else
             if isNativeTerminalAvailable {
                 GhosttyTerminalSurface(
                     terminalKey: terminalKey,
@@ -305,16 +308,21 @@ struct TerminalScreen: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 6)
             } else {
-                TerminalFallbackSurface(
-                    snapshot: activeSnapshot,
-                    fontSize: CGFloat(terminalFontSize),
-                    theme: theme,
-                    isRunning: isRunning,
-                    onInput: handleTerminalTextInput,
-                    onResize: resizeTerminal
-                )
+                fallbackTerminalSurface
             }
+            #endif
         }
+    }
+
+    private var fallbackTerminalSurface: some View {
+        TerminalFallbackSurface(
+            snapshot: activeSnapshot,
+            fontSize: CGFloat(terminalFontSize),
+            theme: theme,
+            isRunning: isRunning,
+            onInput: handleTerminalTextInput,
+            onResize: resizeTerminal
+        )
     }
 
     private func bootstrapTerminalRoute() async {
