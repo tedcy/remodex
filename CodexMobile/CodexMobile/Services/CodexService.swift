@@ -458,7 +458,7 @@ final class CodexService {
     var terminalSnapshot: RemodexTerminalSnapshot = .idle
     var terminalSnapshotsById: [String: RemodexTerminalSnapshot] = [:]
     var terminalProfile: RemodexTerminalProfile = RemodexTerminalProfileStore.load()
-    @ObservationIgnored let nativeSSHTerminal = RemodexNativeSSHTerminal()
+    @ObservationIgnored var nativeSSHTerminal: RemodexNativeSSHTerminal?
     @ObservationIgnored var nativeSSHTerminalsById: [String: RemodexNativeSSHTerminal] = [:]
 
     // --- Internal wiring ------------------------------------------------------
@@ -901,6 +901,10 @@ final class CodexService {
         }
         rebuildThreadLookupCaches()
     }
+
+    // The x86_64 iOS simulator can abort while tearing down Swift isolated deinits.
+    // CodexService has no teardown work that needs MainActor isolation.
+    nonisolated deinit {}
 
     // Persists per-thread plan-mode provenance so reconnect/relaunch keeps native vs fallback behavior stable.
     private func persistPlanSessionSources() {

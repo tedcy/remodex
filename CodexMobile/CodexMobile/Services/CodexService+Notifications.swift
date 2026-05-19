@@ -18,7 +18,7 @@ protocol CodexRemoteNotificationRegistering: AnyObject {
     func registerForRemoteNotifications()
 }
 
-final class CodexApplicationRemoteNotificationRegistrar: CodexRemoteNotificationRegistering {
+nonisolated final class CodexApplicationRemoteNotificationRegistrar: CodexRemoteNotificationRegistering {
     // Requests the APNs device token once alert permission is no longer denied.
     @MainActor
     func registerForRemoteNotifications() {
@@ -49,7 +49,7 @@ extension UNUserNotificationCenter: CodexUserNotificationCentering {
     }
 }
 
-final class CodexNotificationCenterDelegateProxy: NSObject, UNUserNotificationCenterDelegate {
+nonisolated final class CodexNotificationCenterDelegateProxy: NSObject, UNUserNotificationCenterDelegate {
     weak var service: CodexService?
 
     init(service: CodexService) {

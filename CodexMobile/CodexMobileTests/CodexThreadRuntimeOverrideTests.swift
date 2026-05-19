@@ -123,14 +123,23 @@ final class CodexThreadRuntimeOverrideTests: XCTestCase {
         XCTAssertFalse(service.isRuntimeSelectionLoadingForComposer())
     }
 
-    func testDefaultModelFallbackIsNotPersistedBeforeModelListRefresh() {
+    func testDefaultModelFallbackIsNotPersistedBeforeModelListRefresh() async throws {
         let suiteName = "CodexThreadRuntimeOverrideTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard
         defaults.removePersistentDomain(forName: suiteName)
 
         let service = CodexService(defaults: defaults)
         Self.retainedServices.append(service)
-        service.normalizeRuntimeSelectionsAfterModelsUpdate()
+        service.requestTransportOverride = { method, _ in
+            XCTAssertEqual(method, "model/list")
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object(["items": .array([])]),
+                includeJSONRPC: false
+            )
+        }
+
+        try await service.listModels()
 
         XCTAssertFalse(service.hasPersistedSelectedModelId)
         XCTAssertNil(service.selectedModelId)
@@ -139,15 +148,24 @@ final class CodexThreadRuntimeOverrideTests: XCTestCase {
         XCTAssertNil(defaults.string(forKey: CodexService.selectedModelIdDefaultsKey))
     }
 
-    func testModelListRefreshPersistsResolvedDefaultForFutureLaunches() {
+    func testModelListRefreshPersistsResolvedDefaultForFutureLaunches() async throws {
         let suiteName = "CodexThreadRuntimeOverrideTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard
         defaults.removePersistentDomain(forName: suiteName)
 
         let firstService = CodexService(defaults: defaults)
         Self.retainedServices.append(firstService)
-        firstService.availableModels = [makeGPT55Model(), makeModel()]
-        firstService.normalizeRuntimeSelectionsAfterModelsUpdate()
+        let modelItems = try modelsListResponse([makeGPT55Model(), makeModel()])
+        firstService.requestTransportOverride = { method, _ in
+            XCTAssertEqual(method, "model/list")
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object(["items": .array(modelItems)]),
+                includeJSONRPC: false
+            )
+        }
+
+        try await firstService.listModels()
 
         XCTAssertTrue(firstService.hasPersistedSelectedModelId)
         XCTAssertEqual(firstService.selectedModelId, "gpt-5.5")
@@ -310,5 +328,12 @@ final class CodexThreadRuntimeOverrideTests: XCTestCase {
             ],
             defaultReasoningEffort: "low"
         )
+    }
+
+    private func modelsListResponse(_ models: [CodexModelOption]) throws -> [JSONValue] {
+        try models.map { model in
+            let data = try JSONEncoder().encode(model)
+            return try JSONDecoder().decode(JSONValue.self, from: data)
+        }
     }
 }

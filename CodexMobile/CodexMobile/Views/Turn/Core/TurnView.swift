@@ -41,6 +41,7 @@ struct TurnView: View {
     @State private var isHandingOffToMac = false
     @State private var isStartingSiblingChat = false
     @State private var isReloadingThreadHistory = false
+    @State private var reloadConversationAttemptCount = 0
     @State private var isForkingThread = false
     @State private var checkedOutElsewhereAlert: CheckedOutElsewhereAlert?
     @State private var isVoiceRecording = false
@@ -290,6 +291,9 @@ struct TurnView: View {
                     viewModel.dismissGitActionSuccess()
                 }
             )
+        }
+        .overlay(alignment: .topLeading) {
+            reloadConversationUITestProbe
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.88), value: viewModel.gitActionLoadingTitle)
         .animation(.spring(response: 0.35, dampingFraction: 0.88), value: viewModel.gitActionSuccess?.id)
@@ -649,6 +653,7 @@ struct TurnView: View {
         }
 
         isReloadingThreadHistory = true
+        reloadConversationAttemptCount += 1
         Task { @MainActor in
             defer { isReloadingThreadHistory = false }
 
@@ -660,6 +665,21 @@ struct TurnView: View {
                     ?? error.localizedDescription
             }
         }
+    }
+
+    @ViewBuilder
+    private var reloadConversationUITestProbe: some View {
+#if DEBUG && targetEnvironment(simulator)
+        Color.clear
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("thread.reloadConversation.state")
+            .accessibilityLabel("Reload conversation state")
+            .accessibilityValue("\(reloadConversationAttemptCount):\(isReloadingThreadHistory ? "reloading" : "ready")")
+#else
+        EmptyView()
+#endif
     }
 
     private func continueOnDesktopApp() {

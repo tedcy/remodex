@@ -12,6 +12,22 @@ final class TurnViewModelQueueTests: XCTestCase {
     private static var retainedServices: [CodexService] = []
     private static var retainedViewModels: [TurnViewModel] = []
 
+    private func emptyRPCResponse() -> RPCMessage {
+        RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+    }
+
+    private func turnStartResponse(turnId: String = "turn-new") -> RPCMessage {
+        RPCMessage(
+            id: .string(UUID().uuidString),
+            result: .object(["turnId": .string(turnId)]),
+            includeJSONRPC: false
+        )
+    }
+
+    private func isWorkspaceCheckpointMethod(_ method: String) -> Bool {
+        method.hasPrefix("workspace/checkpoint")
+    }
+
     func testSendTurnQueuesImmediatelyWhenThreadBusy() async throws {
         let service = makeService()
         service.isConnected = true
@@ -160,6 +176,9 @@ final class TurnViewModelQueueTests: XCTestCase {
 
         var recordedMethods: [String] = []
         service.requestTransportOverride = { method, _ in
+            if self.isWorkspaceCheckpointMethod(method) {
+                return self.emptyRPCResponse()
+            }
             recordedMethods.append(method)
             if method == "thread/read" {
                 return RPCMessage(
@@ -174,11 +193,7 @@ final class TurnViewModelQueueTests: XCTestCase {
             }
 
             XCTAssertEqual(method, "turn/start")
-            return RPCMessage(
-                id: .string(UUID().uuidString),
-                result: .object(["turnId": .string("turn-new")]),
-                includeJSONRPC: false
-            )
+            return self.turnStartResponse()
         }
 
         let viewModel = makeViewModel()
@@ -233,17 +248,16 @@ final class TurnViewModelQueueTests: XCTestCase {
         XCTAssertTrue(service.messagesByThread["thread-queue"]?.isEmpty ?? true)
     }
 
-    func testSendTurnStoresOnlyConfirmedFileMentionsOnUserMessage() async {
+    func testSendTurnStoresOnlyConfirmedFileMentionsOnUserMessage() async throws {
         let service = makeService()
         service.isConnected = true
         service.resumedThreadIDs.insert("thread-queue")
         service.requestTransportOverride = { method, _ in
+            if self.isWorkspaceCheckpointMethod(method) {
+                return self.emptyRPCResponse()
+            }
             XCTAssertEqual(method, "turn/start")
-            return RPCMessage(
-                id: .string(UUID().uuidString),
-                result: .object(["turnId": .string("turn-new")]),
-                includeJSONRPC: false
-            )
+            return self.turnStartResponse()
         }
 
         let viewModel = makeViewModel()
@@ -258,22 +272,21 @@ final class TurnViewModelQueueTests: XCTestCase {
         viewModel.sendTurn(codex: service, threadID: "thread-queue")
         await waitForSendCompletion(viewModel)
 
-        let message = try XCTUnwrap(service.messagesByThread["thread-queue"]?.last)
+        let message = try XCTUnwrap(service.messagesByThread["thread-queue"]?.last(where: { $0.role == .user }))
         XCTAssertEqual(message.text, "Please inspect @CodexMobile/Views/Turn/TurnView.swift")
         XCTAssertEqual(message.fileMentions, ["CodexMobile/Views/Turn/TurnView.swift"])
     }
 
-    func testSendTurnDoesNotStoreManualFileLikeTextAsConfirmedMention() async {
+    func testSendTurnDoesNotStoreManualFileLikeTextAsConfirmedMention() async throws {
         let service = makeService()
         service.isConnected = true
         service.resumedThreadIDs.insert("thread-queue")
         service.requestTransportOverride = { method, _ in
+            if self.isWorkspaceCheckpointMethod(method) {
+                return self.emptyRPCResponse()
+            }
             XCTAssertEqual(method, "turn/start")
-            return RPCMessage(
-                id: .string(UUID().uuidString),
-                result: .object(["turnId": .string("turn-new")]),
-                includeJSONRPC: false
-            )
+            return self.turnStartResponse()
         }
 
         let viewModel = makeViewModel()
@@ -282,7 +295,7 @@ final class TurnViewModelQueueTests: XCTestCase {
         viewModel.sendTurn(codex: service, threadID: "thread-queue")
         await waitForSendCompletion(viewModel)
 
-        let message = try XCTUnwrap(service.messagesByThread["thread-queue"]?.last)
+        let message = try XCTUnwrap(service.messagesByThread["thread-queue"]?.last(where: { $0.role == .user }))
         XCTAssertEqual(message.text, "Please inspect @CodexMobile/Views/Turn/TurnView.swift")
         XCTAssertTrue(message.fileMentions.isEmpty)
     }
@@ -312,13 +325,12 @@ final class TurnViewModelQueueTests: XCTestCase {
 
         var capturedParams: JSONValue?
         service.requestTransportOverride = { method, params in
+            if self.isWorkspaceCheckpointMethod(method) {
+                return self.emptyRPCResponse()
+            }
             XCTAssertEqual(method, "turn/start")
             capturedParams = params
-            return RPCMessage(
-                id: .string(UUID().uuidString),
-                result: .object(["turnId": .string("turn-plan")]),
-                includeJSONRPC: false
-            )
+            return self.turnStartResponse(turnId: "turn-plan")
         }
 
         viewModel.flushQueueIfPossible(codex: service, threadID: "thread-queue")
@@ -548,6 +560,9 @@ final class TurnViewModelQueueTests: XCTestCase {
 
         var recordedMethods: [String] = []
         service.requestTransportOverride = { method, _ in
+            if self.isWorkspaceCheckpointMethod(method) {
+                return self.emptyRPCResponse()
+            }
             recordedMethods.append(method)
             if method == "thread/read" {
                 return RPCMessage(
@@ -562,11 +577,7 @@ final class TurnViewModelQueueTests: XCTestCase {
             }
 
             XCTAssertEqual(method, "turn/start")
-            return RPCMessage(
-                id: .string(UUID().uuidString),
-                result: .object(["turnId": .string("turn-new")]),
-                includeJSONRPC: false
-            )
+            return self.turnStartResponse()
         }
 
         let viewModel = makeViewModel()

@@ -57,6 +57,7 @@ struct ContentView: View {
     @State private var sidebarPrewarmTask: Task<Void, Never>?
     @State private var presentedRootSheet: RootSheetRoute?
     @State private var isWhatsNewPresentationReady = false
+    @State private var hasHandledDebugPairingPayload = false
     @State private var sidebarGestureDebugSequence = 0
     @State private var activeSidebarGestureDebugID: Int?
     @State private var lastSidebarGestureLogBucket: Int?
@@ -95,6 +96,9 @@ struct ContentView: View {
             })
             // Only resume saved-pairing recovery after onboarding is done and the manual scanner is not in control.
             .task {
+                if await connectDebugPairingPayloadIfNeeded() {
+                    return
+                }
                 guard hasSeenOnboarding, !isShowingManualScanner else {
                     debugSidebarLog("launch task skipped onboardingSeen=\(hasSeenOnboarding) manualScanner=\(isShowingManualScanner)")
                     return
@@ -1350,6 +1354,37 @@ struct ContentView: View {
     private func dismissWhatsNewSheet(version: String) {
         lastPresentedWhatsNewVersion = version
         isWhatsNewPresentationReady = false
+    }
+
+    // DEBUG-only automation hook used by simulator smoke tests to pair without camera or host mouse control.
+    private func connectDebugPairingPayloadIfNeeded() async -> Bool {
+#if DEBUG && targetEnvironment(simulator)
+        guard let encodedPayload = ProcessInfo.processInfo.environment["CodexUITestsPairingPayloadBase64"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !encodedPayload.isEmpty else {
+            return false
+        }
+
+        guard !hasHandledDebugPairingPayload else {
+            return true
+        }
+
+        hasHandledDebugPairingPayload = true
+        guard let data = Data(base64Encoded: encodedPayload),
+              let payload = try? JSONDecoder().decode(CodexPairingQRPayload.self, from: data) else {
+            return true
+        }
+
+        hasSeenOnboarding = true
+        lastPresentedWhatsNewVersion = whatsNewReleaseVersion
+        isShowingManualScanner = false
+        hasDismissedAutomaticScanner = false
+        scannerCanReturnToOnboarding = false
+        await viewModel.connectToRelay(pairingPayload: payload, codex: codex)
+        return true
+#else
+        return false
+#endif
     }
 
     private func bridgeUpdateSheet(prompt: CodexBridgeUpdatePrompt) -> some View {

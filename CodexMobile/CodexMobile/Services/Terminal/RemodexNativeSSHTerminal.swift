@@ -31,8 +31,7 @@ enum RemodexNativeSSHTerminalError: LocalizedError {
     }
 }
 
-@MainActor
-final class RemodexNativeSSHTerminal {
+nonisolated final class RemodexNativeSSHTerminal {
     private var client: SSHClient?
     private var writer: TTYStdinWriter?
     private var sessionTask: Task<Void, Never>?
@@ -41,10 +40,12 @@ final class RemodexNativeSSHTerminal {
     private var connectContinuation: CheckedContinuation<Void, Error>?
     private var isUserClosing = false
 
+    @MainActor
     var isRunning: Bool {
         sessionTask != nil
     }
 
+    @MainActor
     func open(
         profile: RemodexTerminalProfile,
         privateKey: String,
@@ -153,6 +154,7 @@ final class RemodexNativeSSHTerminal {
         }
     }
 
+    @MainActor
     func write(_ data: Data) async throws {
         guard let writer else {
             throw RemodexNativeSSHTerminalError.sessionNotRunning
@@ -162,17 +164,25 @@ final class RemodexNativeSSHTerminal {
         try await writer.write(buffer)
     }
 
+    @MainActor
     func resize(cols: Int, rows: Int) async throws {
         guard let writer else { return }
         try await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0)
     }
 
+    @MainActor
     func close() async {
         let client = client
         closeLocalState(markUserClosing: true)
         try? await client?.close()
     }
 
+    deinit {
+        sessionTask?.cancel()
+        connectContinuation?.resume(throwing: CancellationError())
+    }
+
+    @MainActor
     private func closeLocalState(markUserClosing: Bool = false) {
         isUserClosing = markUserClosing
         sessionTask?.cancel()
@@ -187,6 +197,7 @@ final class RemodexNativeSSHTerminal {
         }
     }
 
+    @MainActor
     private func clearSessionReferences(for sessionId: UUID) {
         guard isCurrentSession(sessionId) else { return }
         sessionTask = nil
@@ -195,25 +206,30 @@ final class RemodexNativeSSHTerminal {
         client = nil
     }
 
+    @MainActor
     private func isCurrentSession(_ sessionId: UUID) -> Bool {
         currentSessionId == sessionId
     }
 
+    @MainActor
     private func resumeConnectContinuation(for sessionId: UUID) {
         guard isCurrentSession(sessionId) else { return }
         resumeConnectContinuation()
     }
 
+    @MainActor
     private func resumeConnectContinuation() {
         connectContinuation?.resume()
         connectContinuation = nil
     }
 
+    @MainActor
     private func resumeConnectContinuation(throwing error: Error) {
         connectContinuation?.resume(throwing: error)
         connectContinuation = nil
     }
 
+    @MainActor
     private func resumeConnectContinuation(for sessionId: UUID, throwing error: Error) {
         guard isCurrentSession(sessionId) else { return }
         resumeConnectContinuation(throwing: error)

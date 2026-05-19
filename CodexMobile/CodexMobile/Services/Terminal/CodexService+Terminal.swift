@@ -179,7 +179,10 @@ extension CodexService {
     }
 
     func closeTerminal(terminalId: String) async throws {
-        await nativeTerminal(for: terminalId).close()
+        if let terminal = nativeTerminalIfExists(for: terminalId) {
+            await terminal.close()
+            clearNativeTerminal(for: terminalId)
+        }
         updateTerminalSnapshot(for: terminalId) { snapshot in
             snapshot.status = .closed
             snapshot.errorMessage = nil
@@ -219,15 +222,31 @@ extension CodexService {
     }
 
     private func nativeTerminal(for terminalId: String) -> RemodexNativeSSHTerminal {
-        if terminalId == Self.defaultTerminalId {
-            return nativeSSHTerminal
-        }
-        if let terminal = nativeSSHTerminalsById[terminalId] {
+        if let terminal = nativeTerminalIfExists(for: terminalId) {
             return terminal
         }
         let terminal = RemodexNativeSSHTerminal()
-        nativeSSHTerminalsById[terminalId] = terminal
+        if terminalId == Self.defaultTerminalId {
+            nativeSSHTerminal = terminal
+        } else {
+            nativeSSHTerminalsById[terminalId] = terminal
+        }
         return terminal
+    }
+
+    private func nativeTerminalIfExists(for terminalId: String) -> RemodexNativeSSHTerminal? {
+        if terminalId == Self.defaultTerminalId {
+            return nativeSSHTerminal
+        }
+        return nativeSSHTerminalsById[terminalId]
+    }
+
+    private func clearNativeTerminal(for terminalId: String) {
+        if terminalId == Self.defaultTerminalId {
+            nativeSSHTerminal = nil
+        } else {
+            nativeSSHTerminalsById[terminalId] = nil
+        }
     }
 
     private func setTerminalSnapshot(_ snapshot: RemodexTerminalSnapshot, for terminalId: String) {

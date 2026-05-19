@@ -144,6 +144,8 @@ struct TurnToolbarContent: ToolbarContent {
                     TurnMacHandoffToolbarLabel(isLoading: isThreadActionLoading)
                 }
                 .accessibilityLabel("Thread actions")
+                .accessibilityIdentifier("thread.actions.menu")
+                .accessibilityValue(isReloadingConversation ? "Reloading Conversation" : "Ready")
             }
         }
 

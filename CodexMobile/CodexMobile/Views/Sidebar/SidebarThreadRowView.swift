@@ -108,6 +108,7 @@ struct SidebarThreadRowView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("sidebar.thread.row.\(thread.id)")
         .padding(.leading, 4)
         .padding(.trailing, 12)
         .padding(.vertical, 12)
@@ -155,6 +156,7 @@ struct SidebarThreadRowView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("sidebar.thread.row.\(thread.id)")
         .padding(.leading, 4)
         .padding(.trailing, 12)
         .padding(.vertical, 4)
