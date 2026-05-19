@@ -350,7 +350,10 @@ extension CodexMessage {
     private var hasRenderablePlanResult: Bool {
         let placeholders: Set<String> = ["Planning..."]
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return proposedPlan != nil || (!trimmedText.isEmpty && !placeholders.contains(trimmedText))
+        guard !trimmedText.isEmpty, !placeholders.contains(trimmedText) else {
+            return false
+        }
+        return proposedPlan != nil || !trimmedText.isEmpty
     }
 
     var shouldDisplayComposerStructuredPrompt: Bool {

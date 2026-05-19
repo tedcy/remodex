@@ -1495,6 +1495,8 @@ extension CodexService {
                   let targetIndex = assistantIndices.last(where: { index in
                       !imageOnlyIndices.contains(index)
                           && result[index].assistantPhase == "final_answer"
+                  }) ?? assistantIndices.last(where: { index in
+                      !imageOnlyIndices.contains(index)
                   }) else {
                 continue
             }

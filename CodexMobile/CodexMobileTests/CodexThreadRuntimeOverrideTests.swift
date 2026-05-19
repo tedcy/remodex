@@ -23,6 +23,9 @@ final class CodexThreadRuntimeOverrideTests: XCTestCase {
 
         var capturedTurnStartParams: [JSONValue] = []
         service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             XCTAssertEqual(method, "turn/start")
             capturedTurnStartParams.append(params ?? .null)
             return RPCMessage(

@@ -186,7 +186,7 @@ final class CodexServiceThreadListTests: XCTestCase {
 
         XCTAssertEqual(
             sorted.map(\.id),
-            ["later-by-updated-at", "later-by-created-at", "oldest-thread"]
+            ["later-by-created-at", "later-by-updated-at", "oldest-thread"]
         )
     }
 

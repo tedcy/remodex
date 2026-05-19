@@ -267,6 +267,12 @@ extension CodexService {
             requestedMode: collaborationMode,
             preserveExisting: preservePlanSessionState
         )
+        if effectiveCollaborationMode != nil {
+            _ = try buildCollaborationModePayload(
+                for: effectiveCollaborationMode,
+                threadId: initialThreadId
+            )
+        }
         preparePlanSessionForStart(
             threadId: initialThreadId,
             collaborationMode: effectiveCollaborationMode,
@@ -374,6 +380,17 @@ extension CodexService {
         }
 
         guard let normalizedTurnID else {
+            if let normalizedThreadID,
+               activeTurnID(for: normalizedThreadID) == nil,
+               runningThreadIDs.contains(normalizedThreadID)
+                    || protectedRunningFallbackThreadIDs.contains(normalizedThreadID) {
+                demoteVisibleRunningStateToProtectedFallback(for: normalizedThreadID)
+                let error = CodexServiceError.invalidInput(
+                    "The active run has not published an interruptible turn ID yet. Please try again in a moment."
+                )
+                lastErrorMessage = userFacingTurnErrorMessageForFooter(from: error)
+                throw error
+            }
             throw CodexServiceError.invalidInput("turn/interrupt requires a non-empty turnId")
         }
 
@@ -1971,8 +1988,7 @@ extension CodexService {
             return nil
         }
 
-        let resolvedModel = runtimeModelIdentifierForTurn()
-            ?? selectedModelOption()?.model
+        let resolvedModel = selectedModelOption()?.model
             ?? availableModels.first?.model
             ?? selectedModelId
         guard let resolvedModel,
@@ -2060,19 +2076,25 @@ extension CodexService {
     }
 
     func allowsInferredPlanQuestionnaireFallback(for threadId: String) -> Bool {
-        currentPlanSessionSource(for: threadId) == .compatibilityFallback
+        switch currentPlanSessionSource(for: threadId) {
+        case .requested, .compatibilityFallback:
+            return true
+        case .nativeAppServer, .nativeDesktopEndpoint, nil:
+            return false
+        }
     }
 
-    // Plain-text questionnaire recovery belongs only to explicit compatibility mode.
+    // Assistant final-answer recovery remains useful for requested/native plan
+    // sessions, while questionnaire inference stays compatibility-only.
     func allowsAssistantPlanFallbackRecovery(for threadId: String) -> Bool {
-        currentPlanSessionSource(for: threadId) == .compatibilityFallback
+        currentPlanSessionSource(for: threadId) != nil
     }
 
-    // Native/requested plan threads should rely on official requestUserInput events,
-    // not on heuristics over assistant prose.
+    // Native/requested plan threads should rely on official requestUserInput events
+    // for questionnaires, but can still recover assistant final-answer text.
     func allowsAssistantPlanFallbackRecovery(for threadId: String, turnId: String?) -> Bool {
         let _ = turnId
-        return currentPlanSessionSource(for: threadId) == .compatibilityFallback
+        return currentPlanSessionSource(for: threadId) != nil
     }
 
     func markRequestedPlanSession(for threadId: String) {
@@ -2370,7 +2392,10 @@ extension CodexService {
         }
 
         let message = rpcError.message.lowercased()
-        guard message.contains("collaborationmode") || message.contains("collaboration_mode") else {
+        guard message.contains("collaboration")
+                || message.contains("collaborationmode")
+                || message.contains("collaboration_mode")
+                || message.contains("experimentalapi") else {
             return false
         }
 
@@ -2697,26 +2722,26 @@ extension CodexService {
             )
         }.first
 
-        // Newest-first scanning avoids interrupting an older completed turn when recovery is stale.
-        var hasInterruptibleTurnWithoutID = false
-        for turnObject in newestTurnObjects {
-            let turnStatus = normalizedInterruptTurnStatus(from: turnObject)
-            guard isInterruptibleTurnStatus(turnStatus) else {
-                continue
-            }
-
-            if let interruptibleTurnID = normalizedInterruptIdentifier(
-                turnObject["id"]?.stringValue
-                    ?? turnObject["turnId"]?.stringValue
-                    ?? turnObject["turn_id"]?.stringValue
-            ) {
-                return (interruptibleTurnID, false, latestTurnID)
-            }
-
-            hasInterruptibleTurnWithoutID = true
+        // The latest turn is authoritative for run state. Older in-progress rows can be
+        // stale snapshots after the newest turn has already completed.
+        guard let newestTurnObject = newestTurnObjects.first else {
+            return (nil, false, latestTurnID)
         }
 
-        return (nil, hasInterruptibleTurnWithoutID, latestTurnID)
+        let newestTurnStatus = normalizedInterruptTurnStatus(from: newestTurnObject)
+        guard isInterruptibleTurnStatus(newestTurnStatus) else {
+            return (nil, false, latestTurnID)
+        }
+
+        if let interruptibleTurnID = normalizedInterruptIdentifier(
+            newestTurnObject["id"]?.stringValue
+                ?? newestTurnObject["turnId"]?.stringValue
+                ?? newestTurnObject["turn_id"]?.stringValue
+        ) {
+            return (interruptibleTurnID, false, latestTurnID)
+        }
+
+        return (nil, true, latestTurnID)
     }
 
     // Keeps stop recovery compatible with runtimes that only accept snake_case thread/read params.

@@ -171,7 +171,10 @@ final class CodexServiceCatchupRecoveryTests: XCTestCase {
         ]
 
         var recordedMethods: [String] = []
-        service.requestTransportOverride = { method, _ in
+        service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             recordedMethods.append(method)
             XCTFail("First running turn should not hydrate history before the runtime materializes it")
             return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
@@ -195,6 +198,14 @@ final class CodexServiceCatchupRecoveryTests: XCTestCase {
         var resumeRequestCount = 0
         service.requestTransportOverride = { method, params in
             switch method {
+            case "thread/turns/list":
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                return remodexTestThreadTurnsListResponse(turns: [
+                    .object([
+                        "id": .string(turnID),
+                        "status": .string("running"),
+                    ]),
+                ])
             case "thread/read":
                 try? await Task.sleep(nanoseconds: 20_000_000)
                 return RPCMessage(
@@ -307,6 +318,9 @@ final class CodexServiceCatchupRecoveryTests: XCTestCase {
         var canonicalHistoryReadCount = 0
         service.requestTransportOverride = { method, params in
             switch method {
+            case "thread/turns/list":
+                lightweightTurnRefreshCount += 1
+                return remodexTestThreadTurnsListResponse()
             case "thread/read":
                 let includeTurns = params?.objectValue?["includeTurns"]?.boolValue ?? false
                 if includeTurns {

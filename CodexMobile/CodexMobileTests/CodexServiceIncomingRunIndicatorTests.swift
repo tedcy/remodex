@@ -647,7 +647,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
             XCTAssertNil(service.relayUrl)
             XCTAssertEqual(
                 service.lastErrorMessage,
-                "This relay session was replaced by another Mac connection. Scan a new QR code to reconnect."
+                "This relay session was replaced by another computer connection. Scan a new QR code to reconnect."
             )
         }
     }
@@ -675,7 +675,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
             XCTAssertEqual(service.relayUrl, SecureStore.readString(for: CodexSecureKeys.relayUrl))
             XCTAssertEqual(
                 service.lastErrorMessage,
-                "The saved Mac session is temporarily unavailable. Remodex will keep retrying. If you restarted the bridge on your Mac, scan the new QR code."
+                "Trying to reach your saved computer. Remodex will keep retrying. If you restarted the bridge on that computer, scan the new QR code."
             )
             XCTAssertEqual(service.connectionRecoveryState, .retrying(attempt: 0, message: "Reconnecting..."))
         }
@@ -721,7 +721,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
             XCTAssertEqual(service.relayUrl, SecureStore.readString(for: CodexSecureKeys.relayUrl))
             XCTAssertEqual(
                 service.lastErrorMessage,
-                "The Mac was temporarily unavailable and this message could not be delivered. Wait a moment, then try again."
+                "The paired computer was temporarily unavailable and this message could not be delivered. Wait a moment, then try again."
             )
         }
     }
@@ -832,7 +832,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
         XCTAssertTrue(service.isRecoverableTransientConnectionError(NWError.posix(.ETIMEDOUT)))
         XCTAssertEqual(
             service.userFacingConnectFailureMessage(NWError.posix(.ETIMEDOUT)),
-            "Connection timed out. Check server/network."
+            "Connection was interrupted. Tap Reconnect to try again."
         )
     }
 
@@ -1019,6 +1019,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
             threadId: threadID,
             turnId: turnID,
             itemId: "prose-item",
+            assistantPhase: "final_answer",
             text: "Here is the final generated image."
         )
 
@@ -1773,7 +1774,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
         XCTAssertFalse(planMessages[0].shouldDisplayPinnedPlanAccessory)
     }
 
-    func testLegacyAgentDeltaParsesTopLevelTurnIdAndMessageId() {
+    func testLegacyAgentDeltaParsesTopLevelTurnIdAndMessageId() throws {
         let service = makeService()
         let threadID = "thread-\(UUID().uuidString)"
         let turnID = "turn-\(UUID().uuidString)"
@@ -1790,6 +1791,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
                 ]),
             ])
         )
+        service.flushPendingAssistantDeltas(for: threadID, turnId: turnID, itemId: "message-1")
 
         service.handleNotification(
             method: "codex/event/agent_message_content_delta",
@@ -1803,18 +1805,21 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
                 ]),
             ])
         )
+        service.flushPendingAssistantDeltas(for: threadID, turnId: turnID, itemId: "message-2")
 
         let assistantMessages = service.messages(for: threadID).filter { $0.role == .assistant }
         XCTAssertEqual(assistantMessages.count, 2)
-        XCTAssertEqual(assistantMessages[0].turnId, turnID)
-        XCTAssertEqual(assistantMessages[0].itemId, "message-1")
-        XCTAssertEqual(assistantMessages[0].text, "Primo blocco")
-        XCTAssertFalse(assistantMessages[0].isStreaming)
+        let firstAssistantMessage = try XCTUnwrap(assistantMessages.first)
+        XCTAssertEqual(firstAssistantMessage.turnId, turnID)
+        XCTAssertEqual(firstAssistantMessage.itemId, "message-1")
+        XCTAssertEqual(firstAssistantMessage.text, "Primo blocco")
+        XCTAssertFalse(firstAssistantMessage.isStreaming)
 
-        XCTAssertEqual(assistantMessages[1].turnId, turnID)
-        XCTAssertEqual(assistantMessages[1].itemId, "message-2")
-        XCTAssertEqual(assistantMessages[1].text, "Secondo blocco")
-        XCTAssertTrue(assistantMessages[1].isStreaming)
+        let secondAssistantMessage = try XCTUnwrap(assistantMessages.dropFirst().first)
+        XCTAssertEqual(secondAssistantMessage.turnId, turnID)
+        XCTAssertEqual(secondAssistantMessage.itemId, "message-2")
+        XCTAssertEqual(secondAssistantMessage.text, "Secondo blocco")
+        XCTAssertTrue(secondAssistantMessage.isStreaming)
     }
 
     func testLegacyAgentCompletionUsesMessageIdToFinalizeMatchingStream() {
@@ -1935,7 +1940,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
         XCTAssertFalse(assistantMessages[0].isStreaming)
     }
 
-    func testLateLegacyAgentCompletionWithoutMessageIdIsIgnoredForClosedMultiAssistantTurn() {
+    func testLateLegacyAgentCompletionWithoutMessageIdIsIgnoredForClosedMultiAssistantTurn() throws {
         let service = makeService()
         let threadID = "thread-\(UUID().uuidString)"
         let turnID = "turn-\(UUID().uuidString)"
@@ -1952,6 +1957,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
                 ]),
             ])
         )
+        service.flushPendingAssistantDeltas(for: threadID, turnId: turnID, itemId: "message-1")
         service.handleNotification(
             method: "codex/event/agent_message_content_delta",
             params: .object([
@@ -1964,6 +1970,7 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
                 ]),
             ])
         )
+        service.flushPendingAssistantDeltas(for: threadID, turnId: turnID, itemId: "message-2")
 
         sendTurnCompletedSuccess(service: service, threadID: threadID, turnID: turnID)
 
@@ -1981,8 +1988,10 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
 
         let assistantMessages = service.messages(for: threadID).filter { $0.role == .assistant }
         XCTAssertEqual(assistantMessages.count, 2)
-        XCTAssertEqual(assistantMessages[0].text, "Primo blocco")
-        XCTAssertEqual(assistantMessages[1].text, "Secondo blocco")
+        let firstAssistantMessage = try XCTUnwrap(assistantMessages.first)
+        let secondAssistantMessage = try XCTUnwrap(assistantMessages.dropFirst().first)
+        XCTAssertEqual(firstAssistantMessage.text, "Primo blocco")
+        XCTAssertEqual(secondAssistantMessage.text, "Secondo blocco")
     }
 
     func testLateLegacyAgentCompletionWithoutMessageIdDoesNotRegressClosedSingleAssistantBubble() {

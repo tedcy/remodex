@@ -1579,7 +1579,7 @@ extension CodexService {
             )
         }
 
-        guard let messageIndex = findLatestPlanMessageIndex(
+        guard var messageIndex = findLatestPlanMessageIndex(
             threadId: threadId,
             turnId: turnId,
             itemId: itemId,
@@ -1587,6 +1587,12 @@ extension CodexService {
         ) else {
             return
         }
+        messageIndex = mergePlanProgressStateIntoItemPlanMessageIfNeeded(
+            threadId: threadId,
+            turnId: turnId,
+            itemId: itemId,
+            targetIndex: messageIndex
+        )
 
         var planState = messagesByThread[threadId]?[messageIndex].planState ?? CodexPlanState()
         if let explanation {
@@ -1604,6 +1610,75 @@ extension CodexService {
         refreshDerivedPlanMetadata(threadId: threadId, messageIndex: messageIndex)
         persistMessages()
         updateCurrentOutput(for: threadId)
+    }
+
+    // Carries turn-level plan progress onto the eventual item-level plan result.
+    @discardableResult
+    private func mergePlanProgressStateIntoItemPlanMessageIfNeeded(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        targetIndex: Int
+    ) -> Int {
+        guard let itemId, !itemId.isEmpty,
+              let turnId, !turnId.isEmpty,
+              var threadMessages = messagesByThread[threadId],
+              threadMessages.indices.contains(targetIndex) else {
+            return targetIndex
+        }
+
+        let targetID = threadMessages[targetIndex].id
+        guard let progressIndex = threadMessages.indices.reversed().first(where: { index in
+            guard index != targetIndex else {
+                return false
+            }
+            let candidate = threadMessages[index]
+            return candidate.role == .system
+                && candidate.kind == .plan
+                && candidate.turnId == turnId
+                && candidate.resolvedPlanPresentation == .progress
+        }) else {
+            return targetIndex
+        }
+
+        let progressMessage = threadMessages[progressIndex]
+        var targetMessage = threadMessages[targetIndex]
+        targetMessage.planState = mergedPlanState(
+            primary: targetMessage.planState,
+            fallback: progressMessage.planState
+        )
+        threadMessages[targetIndex] = targetMessage
+        threadMessages.remove(at: progressIndex)
+
+        let progressID = progressMessage.id
+        streamingSystemMessageByItemID = streamingSystemMessageByItemID.mapValues { messageID in
+            messageID == progressID ? targetID : messageID
+        }
+
+        messagesByThread[threadId] = threadMessages
+        return threadMessages.firstIndex(where: { $0.id == targetID }) ?? targetIndex
+    }
+
+    private func mergedPlanState(
+        primary: CodexPlanState?,
+        fallback: CodexPlanState?
+    ) -> CodexPlanState? {
+        guard let fallback else {
+            return primary
+        }
+        guard var merged = primary else {
+            return fallback
+        }
+
+        if (merged.explanation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+           let fallbackExplanation = fallback.explanation?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !fallbackExplanation.isEmpty {
+            merged.explanation = fallbackExplanation
+        }
+        if merged.steps.isEmpty {
+            merged.steps = fallback.steps
+        }
+        return merged
     }
 
     // Keeps multi-agent orchestration events on a single structured timeline row.
@@ -1793,7 +1868,7 @@ extension CodexService {
             messagesByThread[threadId]?[existingIndex].turnId = turnId ?? messagesByThread[threadId]?[existingIndex].turnId
             messagesByThread[threadId]?[existingIndex].itemId = itemId
             messagesByThread[threadId]?[existingIndex].structuredUserInputRequest = request
-            persistMessages()
+            persistMessagesImmediately()
             updateCurrentOutput(for: threadId)
             return
         }
@@ -1809,6 +1884,7 @@ extension CodexService {
                 structuredUserInputRequest: request
             )
         )
+        persistMessagesImmediately()
     }
 
     // Removes resolved inline prompt cards once the server confirms the request lifecycle ended.
@@ -1837,7 +1913,7 @@ extension CodexService {
             return
         }
 
-        persistMessages()
+        persistMessagesImmediately()
         if let activeThreadId {
             updateCurrentOutput(for: activeThreadId)
         }
@@ -3593,8 +3669,8 @@ extension CodexService {
             return GeneratedImageMergeTarget(index: sameImageIndex, canAdoptImageItemId: false)
         }
 
-        // Late image-generation events can arrive after the final prose item, so attach them
-        // to the visible assistant answer without stealing that row's item-scoped identity.
+        // Image-generation events can arrive before or after the final prose item.
+        // Attach them to the latest visible assistant row without stealing item identity.
         guard let turnId else {
             return nil
         }
@@ -3603,7 +3679,6 @@ extension CodexService {
             return candidate.role == .assistant
                 && candidate.kind == .chat
                 && candidate.turnId == turnId
-                && Self.isFinalAnswerAssistantPhase(candidate.assistantPhase)
                 && !candidate.isStreaming
                 && !Self.isGeneratedImageArtifactOnly(candidate.text)
                 && Self.hasMeaningfulHistoryText(candidate.text)
@@ -4162,7 +4237,6 @@ extension CodexService {
                     let belongsToTurn = belongsToCompletedTurn(threadMessages[index])
                         || fallbackPlanIndex == index
                     guard belongsToTurn,
-                          threadMessages[index].resolvedPlanPresentation == .progress,
                           let planState = threadMessages[index].planState,
                           !planState.steps.isEmpty,
                           planState.steps.contains(where: { $0.status != .completed }) else {
@@ -4283,6 +4357,12 @@ extension CodexService {
                 messagePersistence.save(snapshot)
             }
         }
+    }
+
+    func persistMessagesImmediately() {
+        messagePersistenceDebounceTask?.cancel()
+        messagePersistenceDebounceTask = nil
+        messagePersistence.save(messagesByThread)
     }
 
     // Persists per-turn terminal state so completed-turn grouping survives app relaunch.
@@ -4653,10 +4733,15 @@ extension CodexService {
 
     // Keeps stopped-turn lookup thread-local so scroll/render code never rescans full transcripts.
     func rebuildStoppedTurnIDs(for threadId: String, messages: [CodexMessage]) -> Set<String> {
-        let stoppedTurnIDs = Set(
+        var stoppedTurnIDs = Set(
             messages.compactMap(\.turnId)
                 .filter { terminalStateByTurnID[$0] == .stopped }
         )
+        for (turnId, state) in terminalStateByTurnID where state == .stopped {
+            if threadIdByTurnID[turnId] == threadId {
+                stoppedTurnIDs.insert(turnId)
+            }
+        }
         stoppedTurnIDsByThread[threadId] = stoppedTurnIDs
         return stoppedTurnIDs
     }
@@ -4930,12 +5015,20 @@ extension CodexService {
         }
 
         if let turnId, !turnId.isEmpty {
+            let syntheticPlanItemId = syntheticStreamingItemId(turnId: turnId, kind: .plan)
             return messagesByThread[threadId]?.indices.reversed().first(where: { index in
                 let candidate = messagesByThread[threadId]?[index]
                 return candidate?.role == .system
                     && candidate?.kind == .plan
                     && candidate?.turnId == turnId
-                    && candidate?.resolvedPlanPresentation == planPresentation
+                    && (
+                        candidate?.resolvedPlanPresentation == planPresentation
+                            || candidate?.planPresentation == nil
+                            || (
+                                planPresentation == .progress
+                                    && candidate?.itemId == syntheticPlanItemId
+                            )
+                    )
             })
         }
 
@@ -4943,7 +5036,10 @@ extension CodexService {
             let candidate = messagesByThread[threadId]?[index]
             return candidate?.role == .system
                 && candidate?.kind == .plan
-                && candidate?.resolvedPlanPresentation == planPresentation
+                && (
+                    candidate?.resolvedPlanPresentation == planPresentation
+                        || candidate?.planPresentation == nil
+                )
         })
     }
 
@@ -5026,6 +5122,23 @@ extension CodexService {
                 let existingItemId = normalizedStreamingItemID(messagesByThread[threadId]?[messageIndex].itemId)
 
                 if existingItemId == nil {
+                    let existingMessage = messagesByThread[threadId]?[messageIndex]
+                    let existingImageReferences = AssistantMarkdownImageReferenceParser
+                        .references(in: existingMessage?.text ?? "")
+                        .filter(\.isCodexGeneratedImage)
+                    let canAdoptTurnFallback = existingMessage?.isStreaming == true
+                        || existingImageReferences.isEmpty
+                        || Self.isFinalAnswerAssistantPhase(normalizedPhase)
+                    guard canAdoptTurnFallback else {
+                        return createAssistantMessage(
+                            threadId: threadId,
+                            turnId: turnId,
+                            itemId: normalizedItemId,
+                            assistantPhase: normalizedPhase,
+                            isStreaming: createStreamingMessage,
+                            promoteTurnFallback: false
+                        )
+                    }
                     messagesByThread[threadId]?[messageIndex].itemId = normalizedItemId
                     applyAssistantPhaseIfNeeded(
                         threadId: threadId,

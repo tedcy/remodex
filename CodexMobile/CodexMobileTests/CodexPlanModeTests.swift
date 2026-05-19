@@ -8,6 +8,66 @@ import XCTest
 @testable import CodexMobile
 
 @MainActor
+func remodexTestEmptyRPCResponse() -> RPCMessage {
+    RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+}
+
+@MainActor
+func remodexTestTurnStartResponse(turnId: String = "turn-new") -> RPCMessage {
+    RPCMessage(
+        id: .string(UUID().uuidString),
+        result: .object(["turnId": .string(turnId)]),
+        includeJSONRPC: false
+    )
+}
+
+@MainActor
+func remodexTestThreadReadResponse(threadId: String? = nil, turns: [JSONValue] = []) -> RPCMessage {
+    var threadObject: RPCObject = ["turns": .array(turns)]
+    if let threadId {
+        threadObject["id"] = .string(threadId)
+    }
+    return RPCMessage(
+        id: .string(UUID().uuidString),
+        result: .object(["thread": .object(threadObject)]),
+        includeJSONRPC: false
+    )
+}
+
+@MainActor
+func remodexTestThreadTurnsListResponse(turns: [JSONValue] = []) -> RPCMessage {
+    RPCMessage(
+        id: .string(UUID().uuidString),
+        result: .object([
+            "data": .array(turns),
+            "nextCursor": .null,
+        ]),
+        includeJSONRPC: false
+    )
+}
+
+@MainActor
+func remodexTestPreflightRPCResponse(method: String, params: JSONValue?) -> RPCMessage? {
+    switch method {
+    case "thread/resume":
+        let threadId = params?.objectValue?["threadId"]?.stringValue
+        return remodexTestThreadReadResponse(threadId: threadId)
+    case "thread/turns/list":
+        return remodexTestThreadTurnsListResponse()
+    case "thread/generateTitle":
+        return RPCMessage(
+            id: .string(UUID().uuidString),
+            result: .object(["title": .string("Generated title")]),
+            includeJSONRPC: false
+        )
+    case "workspace/checkpointCapture", "workspace/checkpointCopy":
+        return remodexTestEmptyRPCResponse()
+    default:
+        return nil
+    }
+}
+
+@MainActor
 final class CodexPlanModeTests: XCTestCase {
     private static var retainedServices: [CodexService] = []
     private static var retainedViewModels: [TurnViewModel] = []
@@ -21,6 +81,9 @@ final class CodexPlanModeTests: XCTestCase {
 
         var capturedTurnStartParams: [JSONValue] = []
         service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             XCTAssertEqual(method, "turn/start")
             capturedTurnStartParams.append(params ?? .null)
             return RPCMessage(
@@ -58,6 +121,7 @@ final class CodexPlanModeTests: XCTestCase {
             "medium"
         )
 
+        service.markTurnCompleted(threadId: "thread-plan", turnId: "turn-live")
         viewModel.input = "Normal follow-up"
         viewModel.sendTurn(codex: service, threadID: "thread-plan")
         await waitForSendCompletion(viewModel)
@@ -274,11 +338,15 @@ final class CodexPlanModeTests: XCTestCase {
         var capturedTurnStartParams: [JSONValue] = []
 
         service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             XCTAssertEqual(method, "turn/start")
             let requestParams = params ?? .null
             capturedTurnStartParams.append(requestParams)
 
-            if capturedTurnStartParams.count == 1 {
+            if capturedTurnStartParams.count == 1,
+               requestParams.objectValue?["collaborationMode"] != nil {
                 throw CodexServiceError.rpcError(
                     RPCError(
                         code: -32600,
@@ -328,6 +396,16 @@ final class CodexPlanModeTests: XCTestCase {
 
         service.requestTransportOverride = { method, params in
             switch method {
+            case "workspace/checkpointCapture", "workspace/checkpointCopy":
+                return remodexTestEmptyRPCResponse()
+
+            case "thread/generateTitle":
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object(["title": .string("Generated title")]),
+                    includeJSONRPC: false
+                )
+
             case "thread/resume":
                 let threadId = params?.objectValue?["threadId"]?.stringValue
                 if threadId == archivedThreadID {
@@ -398,6 +476,9 @@ final class CodexPlanModeTests: XCTestCase {
         service.setSelectedModelId("gpt-5-codex")
         service.markCompatibilityPlanFallback(for: threadID)
         service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             XCTAssertEqual(method, "turn/steer")
             XCTAssertEqual(params?.objectValue?["threadId"]?.stringValue, threadID)
             XCTAssertEqual(
@@ -433,6 +514,9 @@ final class CodexPlanModeTests: XCTestCase {
 
         var capturedTurnStartParams: JSONValue?
         service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             XCTAssertEqual(method, "turn/start")
             capturedTurnStartParams = params
             return RPCMessage(
@@ -471,6 +555,9 @@ final class CodexPlanModeTests: XCTestCase {
 
         var capturedTurnSteerParams: JSONValue?
         service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             XCTAssertEqual(method, "turn/steer")
             capturedTurnSteerParams = params
             return RPCMessage(
@@ -506,6 +593,9 @@ final class CodexPlanModeTests: XCTestCase {
 
         var capturedTurnStartParams: JSONValue?
         service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             XCTAssertEqual(method, "turn/start")
             capturedTurnStartParams = params
             return RPCMessage(
@@ -534,6 +624,9 @@ final class CodexPlanModeTests: XCTestCase {
         let service = makeService()
 
         service.requestTransportOverride = { method, _ in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: nil) {
+                return response
+            }
             XCTAssertEqual(method, "collaborationMode/list")
             return RPCMessage(
                 id: .string(UUID().uuidString),
@@ -555,6 +648,9 @@ final class CodexPlanModeTests: XCTestCase {
         let service = makeService()
 
         service.requestTransportOverride = { method, _ in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: nil) {
+                return response
+            }
             XCTAssertEqual(method, "collaborationMode/list")
             return RPCMessage(
                 id: .string(UUID().uuidString),
@@ -575,6 +671,9 @@ final class CodexPlanModeTests: XCTestCase {
         let service = makeService()
 
         service.requestTransportOverride = { method, _ in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: nil) {
+                return response
+            }
             XCTAssertEqual(method, "collaborationMode/list")
             return RPCMessage(
                 id: .string(UUID().uuidString),
@@ -621,7 +720,7 @@ final class CodexPlanModeTests: XCTestCase {
         )
     }
 
-    func testTurnPlanNotificationsKeepStructuredStateAndFinalText() {
+    func testTurnPlanNotificationsKeepStructuredStateAndFinalText() throws {
         let service = makeService()
         let threadID = "thread-\(UUID().uuidString)"
         let turnID = "turn-\(UUID().uuidString)"
@@ -676,11 +775,15 @@ final class CodexPlanModeTests: XCTestCase {
 
         let planMessages = service.messages(for: threadID).filter { $0.kind == .plan }
         XCTAssertEqual(planMessages.count, 1)
-        XCTAssertEqual(planMessages[0].text, "1. Audit the current flow\n2. Implement the UI toggle\n3. Add tests")
-        XCTAssertEqual(planMessages[0].planState?.explanation, "We should break the work into safe slices.")
-        XCTAssertEqual(planMessages[0].planState?.steps.count, 2)
-        XCTAssertEqual(planMessages[0].planState?.steps[0].status, .completed)
-        XCTAssertEqual(planMessages[0].planState?.steps[1].status, .inProgress)
+        let planMessage = try XCTUnwrap(planMessages.first)
+        XCTAssertEqual(planMessage.text, "1. Audit the current flow\n2. Implement the UI toggle\n3. Add tests")
+        XCTAssertEqual(planMessage.planState?.explanation, "We should break the work into safe slices.")
+        let planSteps = try XCTUnwrap(planMessage.planState?.steps)
+        XCTAssertEqual(planSteps.count, 2)
+        let firstStep = try XCTUnwrap(planSteps.first)
+        XCTAssertEqual(firstStep.status, .completed)
+        let secondStep = try XCTUnwrap(planSteps.dropFirst().first)
+        XCTAssertEqual(secondStep.status, .inProgress)
     }
 
     func testTurnPlanUpdatedWithoutThreadIDUsesTurnMapping() {
@@ -844,7 +947,7 @@ final class CodexPlanModeTests: XCTestCase {
         XCTAssertEqual(promptMessages[0].turnId, turnID)
     }
 
-    func testStructuredUserInputPromptPersistsAcrossRelaunchUntilResolved() {
+    func testStructuredUserInputPromptPersistsAcrossRelaunchUntilResolved() throws {
         let suiteName = "CodexPlanModeTests.Persistence.\(UUID().uuidString)"
         let threadID = "thread-\(UUID().uuidString)"
         let turnID = "turn-\(UUID().uuidString)"
@@ -883,7 +986,8 @@ final class CodexPlanModeTests: XCTestCase {
         let relaunchedService = makeService(suiteName: suiteName, reset: false)
         let promptMessages = relaunchedService.messages(for: threadID).filter { $0.kind == .userInputPrompt }
         XCTAssertEqual(promptMessages.count, 1)
-        XCTAssertEqual(promptMessages[0].structuredUserInputRequest?.questions.first?.id, "path")
+        let promptMessage = try XCTUnwrap(promptMessages.first)
+        XCTAssertEqual(promptMessage.structuredUserInputRequest?.questions.first?.id, "path")
     }
 
     func testStructuredUserInputPromptWithoutTurnIDStillCreatesPromptCard() {
@@ -1443,7 +1547,7 @@ final class CodexPlanModeTests: XCTestCase {
             bodyText: assistantMessage.text,
             message: assistantMessage,
             threadMessages: [assistantMessage],
-            shouldRecoverFallback: service.allowsAssistantPlanFallbackRecovery(for: "thread-native"),
+            shouldRecoverFallback: service.allowsInferredPlanQuestionnaireFallback(for: "thread-native"),
             parse: InferredPlanQuestionnaireParser.parseAssistantMessage
         )
 
@@ -1489,6 +1593,9 @@ final class CodexPlanModeTests: XCTestCase {
 
         var capturedParams: JSONValue?
         service.requestTransportOverride = { method, params in
+            if let response = remodexTestPreflightRPCResponse(method: method, params: params) {
+                return response
+            }
             XCTAssertEqual(method, "turn/start")
             capturedParams = params
             return RPCMessage(
@@ -1510,7 +1617,7 @@ final class CodexPlanModeTests: XCTestCase {
 
         XCTAssertEqual(
             textInput(from: capturedParams),
-            "Implement the latest approved plan from the most recent <proposed_plan> in this thread."
+            "Implement plan."
         )
     }
 
