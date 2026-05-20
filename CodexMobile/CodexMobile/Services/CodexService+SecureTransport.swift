@@ -258,6 +258,18 @@ extension CodexService {
 
     // Saves the QR-derived bridge metadata used for secure reconnects.
     func rememberRelayPairing(_ payload: CodexPairingQRPayload) {
+        let previousMacDeviceId = normalizedRelayMacDeviceId
+        let isDifferentHost = previousMacDeviceId.map { $0 != payload.macDeviceId } ?? false
+        let hasThreadPresentationState = !threads.isEmpty
+            || activeThreadId != nil
+            || !pinnedThreadIDs.isEmpty
+            || !pinnedThreadSnapshotsByRootID.isEmpty
+            || !snapshotOnlyPinnedThreadIDs.isEmpty
+
+        if isDifferentHost || hasThreadPresentationState {
+            resetThreadPresentationStateForServerSwitch()
+        }
+
         SecureStore.writeString(payload.sessionId, for: CodexSecureKeys.relaySessionId)
         SecureStore.writeString(payload.relay, for: CodexSecureKeys.relayUrl)
         SecureStore.writeString(payload.macDeviceId, for: CodexSecureKeys.relayMacDeviceId)

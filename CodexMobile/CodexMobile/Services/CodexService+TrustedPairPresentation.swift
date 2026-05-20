@@ -116,8 +116,7 @@ extension CodexService {
         }
 
         applySelectedTrustedHost(trustedMac)
-        resetThreadRuntimeStateForServerSwitch()
-        threads = []
+        resetThreadPresentationStateForServerSwitch()
         restoreTrustedPairPresentationState()
     }
 }

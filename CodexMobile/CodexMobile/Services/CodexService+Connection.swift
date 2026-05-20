@@ -643,6 +643,17 @@ extension CodexService {
         resetSecureTransportState()
     }
 
+    // Clears host-scoped sidebar state when the active trusted computer changes.
+    func resetThreadPresentationStateForServerSwitch() {
+        resetThreadRuntimeStateForServerSwitch()
+        threads = []
+        snapshotOnlyPinnedThreadIDs.removeAll()
+        pinnedThreadIDs.removeAll()
+        pinnedThreadSnapshotsByRootID.removeAll()
+        defaults.removeObject(forKey: Self.pinnedThreadIDsDefaultsKey)
+        defaults.removeObject(forKey: Self.pinnedThreadSnapshotsDefaultsKey)
+    }
+
     // Clears UI-only recovery prompts that should not survive a relay/context teardown.
     func clearTransientConnectionPrompts() {
         bridgeUpdatePrompt = nil

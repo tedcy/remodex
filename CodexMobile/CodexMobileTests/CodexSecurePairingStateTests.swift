@@ -69,6 +69,79 @@ final class CodexSecurePairingStateTests: XCTestCase {
         XCTAssertEqual(service.secureMacFingerprint, codexSecureFingerprint(for: freshQRPublicKey))
     }
 
+    func testRememberRelayPairingClearsThreadPresentationWhenMacDeviceChanges() throws {
+        let suiteName = "CodexSecurePairingStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let service = CodexService(defaults: defaults)
+        let staleThread = CodexThread(
+            id: "linux-thread",
+            title: "Linux Chat",
+            cwd: "/home/user/taf"
+        )
+        service.relayMacDeviceId = "linux-host"
+        service.activeThreadId = staleThread.id
+        service.threads = [staleThread]
+        service.pinnedThreadIDs = [staleThread.id]
+        service.pinnedThreadSnapshotsByRootID = [staleThread.id: [staleThread]]
+        service.snapshotOnlyPinnedThreadIDs = [staleThread.id]
+        defaults.set(try service.encoder.encode(service.pinnedThreadIDs), forKey: CodexService.pinnedThreadIDsDefaultsKey)
+        defaults.set(
+            try service.encoder.encode(service.pinnedThreadSnapshotsByRootID),
+            forKey: CodexService.pinnedThreadSnapshotsDefaultsKey
+        )
+
+        let freshQRPublicKey = Data(repeating: 5, count: 32).base64EncodedString()
+        service.rememberRelayPairing(
+            CodexPairingQRPayload(
+                v: codexPairingQRVersion,
+                relay: "ws://relay.local/relay",
+                sessionId: "session-\(UUID().uuidString)",
+                macDeviceId: "mac-\(UUID().uuidString)",
+                macIdentityPublicKey: freshQRPublicKey,
+                expiresAt: Int64(Date().addingTimeInterval(60).timeIntervalSince1970 * 1000)
+            )
+        )
+
+        XCTAssertTrue(service.threads.isEmpty)
+        XCTAssertNil(service.activeThreadId)
+        XCTAssertTrue(service.pinnedThreadIDs.isEmpty)
+        XCTAssertTrue(service.pinnedThreadSnapshotsByRootID.isEmpty)
+        XCTAssertTrue(service.snapshotOnlyPinnedThreadIDs.isEmpty)
+        XCTAssertNil(defaults.object(forKey: CodexService.pinnedThreadIDsDefaultsKey))
+        XCTAssertNil(defaults.object(forKey: CodexService.pinnedThreadSnapshotsDefaultsKey))
+        XCTAssertTrue(service.shouldForceQRBootstrapOnNextHandshake)
+        XCTAssertEqual(service.secureConnectionState, .handshaking)
+        XCTAssertEqual(service.secureMacFingerprint, codexSecureFingerprint(for: freshQRPublicKey))
+    }
+
+    func testRememberRelayPairingClearsThreadPresentationForFreshQRScanEvenWhenMacDeviceMatches() {
+        let service = CodexService()
+        let macDeviceID = "mac-\(UUID().uuidString)"
+        let existingThread = CodexThread(id: "local-thread", title: "Local Chat", cwd: "/Users/me/project")
+        service.relayMacDeviceId = macDeviceID
+        service.activeThreadId = existingThread.id
+        service.threads = [existingThread]
+
+        service.rememberRelayPairing(
+            CodexPairingQRPayload(
+                v: codexPairingQRVersion,
+                relay: "ws://relay.local/relay",
+                sessionId: "session-\(UUID().uuidString)",
+                macDeviceId: macDeviceID,
+                macIdentityPublicKey: Data(repeating: 6, count: 32).base64EncodedString(),
+                expiresAt: Int64(Date().addingTimeInterval(60).timeIntervalSince1970 * 1000)
+            )
+        )
+
+        XCTAssertTrue(service.threads.isEmpty)
+        XCTAssertNil(service.activeThreadId)
+        XCTAssertTrue(service.shouldForceQRBootstrapOnNextHandshake)
+    }
+
     func testResetSecureTransportStatePreservesRePairRequiredState() {
         let service = CodexService()
         service.relaySessionId = "session-\(UUID().uuidString)"
