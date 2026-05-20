@@ -25,6 +25,15 @@ function git(cwd, ...args) {
   }).trim();
 }
 
+function invokeGit(method, params) {
+  return new Promise((resolve) => {
+    handleGitRequest(
+      JSON.stringify({ id: 1, method, params }),
+      (rawResponse) => resolve(JSON.parse(rawResponse))
+    );
+  });
+}
+
 function makeTempRepo() {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "remodex-git-handler-"));
   git(repoDir, "init", "-b", "main");
@@ -555,6 +564,54 @@ test("gitStatus marks a branch as published when origin has it even without loca
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true });
     fs.rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("gitDiff includes only tracked worktree files from git status -uno", async () => {
+  const repoDir = makeTempRepo();
+  const remoteDir = makeBareRemote();
+
+  try {
+    git(remoteDir, "init", "--bare");
+    git(repoDir, "remote", "add", "origin", remoteDir);
+    git(repoDir, "push", "-u", "origin", "main");
+
+    fs.writeFileSync(path.join(repoDir, "committed-only.txt"), "already committed locally\n");
+    git(repoDir, "add", "committed-only.txt");
+    git(repoDir, "commit", "-m", "Local ahead commit");
+
+    fs.writeFileSync(path.join(repoDir, "README.md"), "# Test\n\ntracked worktree change\n");
+    fs.writeFileSync(path.join(repoDir, "untracked.txt"), "untracked draft\n");
+
+    const diffResponse = await invokeGit("git/diff", { cwd: repoDir });
+    const status = await gitStatus(repoDir);
+
+    assert.equal(diffResponse.error, undefined);
+    assert.match(diffResponse.result.patch, /tracked worktree change/);
+    assert.doesNotMatch(diffResponse.result.patch, /already committed locally/);
+    assert.doesNotMatch(diffResponse.result.patch, /untracked draft/);
+    assert.deepEqual(status.diff, { additions: 2, deletions: 0, binaryFiles: 0 });
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("gitDiff ignores untracked-only dirty state", async () => {
+  const repoDir = makeTempRepo();
+
+  try {
+    fs.writeFileSync(path.join(repoDir, "untracked.txt"), "untracked draft\n");
+
+    const diffResponse = await invokeGit("git/diff", { cwd: repoDir });
+    const status = await gitStatus(repoDir);
+
+    assert.equal(diffResponse.error, undefined);
+    assert.equal(diffResponse.result.patch, "");
+    assert.equal(status.dirty, true);
+    assert.deepEqual(status.diff, { additions: 0, deletions: 0, binaryFiles: 0 });
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
   }
 });
 

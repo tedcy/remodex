@@ -199,10 +199,7 @@ async function gitStatus(cwd) {
   const localOnlyCommitCount = await countLocalOnlyCommits(cwd, { detached }).catch(() => 0);
   const state = computeState(dirty, ahead, behind, detached, noUpstream);
   const canPush = hasPushRemote && hasHeadCommit && (ahead > 0 || noUpstream) && !detached;
-  const diff = await repoDiffTotals(cwd, {
-    tracking,
-    fileLines,
-  }).catch(() => ({ additions: 0, deletions: 0, binaryFiles: 0 }));
+  const diff = await repoDiffTotals(cwd).catch(() => ({ additions: 0, deletions: 0, binaryFiles: 0 }));
 
   return {
     isRepo: true,
@@ -249,19 +246,7 @@ async function gitInit(cwd) {
 // ─── Git Diff ─────────────────────────────────────────────────
 
 async function gitDiff(cwd) {
-  const porcelain = await git(cwd, "status", "--porcelain=v1", "-b");
-  const lines = porcelain.trim().split("\n").filter(Boolean);
-  const branchLine = lines[0] || "";
-  const fileLines = lines.slice(1);
-  const tracking = parseTrackingFromStatus(branchLine);
-  const baseRef = await resolveRepoDiffBase(cwd, tracking);
-  const trackedPatch = await gitDiffAgainstBase(cwd, baseRef);
-  const untrackedPaths = fileLines
-    .filter((line) => line.startsWith("?? "))
-    .map((line) => line.substring(3).trim())
-    .filter(Boolean);
-  const untrackedPatch = await diffPatchForUntrackedFiles(cwd, untrackedPaths);
-  const patch = [trackedPatch.trim(), untrackedPatch.trim()].filter(Boolean).join("\n\n").trim();
+  const patch = await gitTrackedWorktreePatch(cwd);
   return { patch };
 }
 
@@ -2246,62 +2231,35 @@ function scopedLocalCheckoutPath(checkoutRootPath, projectRelativePath) {
   return isExistingDirectory(candidatePath) ? normalizeExistingPath(candidatePath) ?? candidatePath : null;
 }
 
-// Computes the local repo delta that still exists on this machine and is not on the remote.
-async function repoDiffTotals(cwd, context) {
-  const baseRef = await resolveRepoDiffBase(cwd, context.tracking);
-  const trackedTotals = await diffTotalsAgainstBase(cwd, baseRef);
-  const untrackedPaths = context.fileLines
-    .filter((line) => line.startsWith("?? "))
-    .map((line) => line.substring(3).trim())
-    .filter(Boolean);
-  const untrackedTotals = await diffTotalsForUntrackedFiles(cwd, untrackedPaths);
-
-  return {
-    additions: trackedTotals.additions + untrackedTotals.additions,
-    deletions: trackedTotals.deletions + untrackedTotals.deletions,
-    binaryFiles: trackedTotals.binaryFiles + untrackedTotals.binaryFiles,
-  };
-}
-
-// Uses upstream when available; otherwise falls back to commits not yet present on any remote.
-async function resolveRepoDiffBase(cwd, tracking) {
-  if (!(await refExists(cwd, "HEAD"))) {
-    return EMPTY_TREE_HASH;
+// Computes the local tracked-file delta that `git status -uno` would surface.
+async function repoDiffTotals(cwd) {
+  if (!(await hasTrackedWorktreeChanges(cwd))) {
+    return { additions: 0, deletions: 0, binaryFiles: 0 };
   }
 
-  if (tracking) {
-    try {
-      return (await git(cwd, "merge-base", "HEAD", "@{u}")).trim();
-    } catch {
-      // Fall through to the local-only commit scan if upstream metadata is stale.
-    }
-  }
-
-  const firstLocalOnlyCommit = (
-    await git(cwd, "rev-list", "--reverse", "--topo-order", "HEAD", "--not", "--remotes")
-  )
-    .trim()
-    .split("\n")
-    .find(Boolean);
-
-  if (!firstLocalOnlyCommit) {
-    return "HEAD";
-  }
-
-  try {
-    return (await git(cwd, "rev-parse", `${firstLocalOnlyCommit}^`)).trim();
-  } catch {
-    return EMPTY_TREE_HASH;
-  }
-}
-
-async function diffTotalsAgainstBase(cwd, baseRef) {
-  const output = await git(cwd, "diff", "--numstat", baseRef);
+  const output = await gitDiffForTrackedWorktree(cwd, "--numstat");
   return parseNumstatTotals(output);
 }
 
-async function gitDiffAgainstBase(cwd, baseRef) {
-  return git(cwd, "diff", "--binary", "--find-renames", baseRef);
+async function gitTrackedWorktreePatch(cwd) {
+  if (!(await hasTrackedWorktreeChanges(cwd))) {
+    return "";
+  }
+
+  return (await gitDiffForTrackedWorktree(cwd, "--binary", "--find-renames")).trim();
+}
+
+async function hasTrackedWorktreeChanges(cwd) {
+  const output = await git(cwd, "status", "--porcelain=v1", "-uno");
+  return output.trim().split("\n").some(Boolean);
+}
+
+async function gitDiffForTrackedWorktree(cwd, ...diffArgs) {
+  if (await refExists(cwd, "HEAD")) {
+    return git(cwd, "diff", ...diffArgs, "HEAD");
+  }
+
+  return git(cwd, "diff", ...diffArgs, "--cached");
 }
 
 async function diffTotalsForUntrackedFiles(cwd, filePaths) {
