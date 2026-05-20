@@ -38,6 +38,29 @@ final class WorkspaceTextFilePreviewTests: XCTestCase {
         XCTAssertEqual(relative?.currentWorkingDirectory, "/repo/App")
     }
 
+    func testParserAcceptsWindowsAbsoluteAndRelativeLocalPaths() {
+        let absolute = WorkspaceTextFileLinkParser.request(
+            fromDestination: #"C:\Users\Huya\repo\Docs\plan notes.md:8"#,
+            currentWorkingDirectory: #"C:\Users\Huya\repo"#
+        )
+        let driveURL = WorkspaceTextFileLinkParser.request(
+            from: URL(string: "C:/Users/Huya/repo/README.md#L12")!,
+            currentWorkingDirectory: #"C:\Users\Huya\repo"#
+        )
+        let relative = WorkspaceTextFileLinkParser.request(
+            fromDestination: #"Docs\plan.md"#,
+            currentWorkingDirectory: #"C:\Users\Huya\repo"#
+        )
+
+        XCTAssertEqual(absolute?.path, #"C:\Users\Huya\repo\Docs\plan notes.md"#)
+        XCTAssertEqual(absolute?.lineNumber, 8)
+        XCTAssertEqual(absolute?.fileName, "plan notes.md")
+        XCTAssertEqual(driveURL?.path, "C:/Users/Huya/repo/README.md")
+        XCTAssertEqual(driveURL?.lineNumber, 12)
+        XCTAssertEqual(relative?.path, #"Docs\plan.md"#)
+        XCTAssertEqual(relative?.currentWorkingDirectory, #"C:\Users\Huya\repo"#)
+    }
+
     func testParserAcceptsCodePathLineReferences() {
         let relative = WorkspaceTextFileLinkParser.request(
             fromDestination: "Sources/App/File.swift:42",
@@ -90,6 +113,10 @@ final class WorkspaceTextFilePreviewTests: XCTestCase {
     func testParserIgnoresExternalAndBareRelativeLinks() {
         XCTAssertNil(WorkspaceTextFileLinkParser.request(
             from: URL(string: "https://example.com/README.md")!,
+            currentWorkingDirectory: "/repo"
+        ))
+        XCTAssertNil(WorkspaceTextFileLinkParser.request(
+            from: URL(string: "x://example.com/README.md")!,
             currentWorkingDirectory: "/repo"
         ))
         XCTAssertNil(WorkspaceTextFileLinkParser.request(

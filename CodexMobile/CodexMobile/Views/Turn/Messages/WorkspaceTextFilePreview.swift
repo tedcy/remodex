@@ -18,7 +18,8 @@ struct WorkspaceTextFilePreviewRequest: Identifiable, Equatable, Sendable {
     }
 
     var fileName: String {
-        let basename = (path as NSString).lastPathComponent
+        let normalizedPath = path.replacingOccurrences(of: "\\", with: "/")
+        let basename = (normalizedPath as NSString).lastPathComponent
         return basename.isEmpty ? path : basename
     }
 }
@@ -45,6 +46,12 @@ nonisolated enum WorkspaceTextFileLinkParser {
 
         if let scheme = url.scheme?.trimmingCharacters(in: .whitespacesAndNewlines),
            !scheme.isEmpty {
+            if isWindowsDriveScheme(scheme) {
+                return request(
+                    fromDestination: url.relativeString,
+                    currentWorkingDirectory: currentWorkingDirectory
+                )
+            }
             return nil
         }
 
@@ -80,8 +87,14 @@ nonisolated enum WorkspaceTextFileLinkParser {
         candidate = split.path
         let lineNumber = urlFragmentLineNumber ?? split.lineNumber
 
-        guard !candidate.hasPrefix("//") else {
-            return nil
+        guard !hasNetworkURLScheme(candidate) else { return nil }
+        guard !candidate.hasPrefix("//") else { return nil }
+        if isWindowsAbsolutePath(candidate) {
+            return WorkspaceTextFilePreviewRequest(
+                path: candidate,
+                currentWorkingDirectory: currentWorkingDirectory,
+                lineNumber: lineNumber
+            )
         }
         if candidate.hasPrefix("/") {
             return WorkspaceTextFilePreviewRequest(
@@ -150,7 +163,10 @@ nonisolated enum WorkspaceTextFileLinkParser {
     private static func isRelativeWorkspacePath(_ candidate: String, lineNumber: Int?) -> Bool {
         candidate.hasPrefix("./")
             || candidate.hasPrefix("../")
+            || candidate.hasPrefix(".\\")
+            || candidate.hasPrefix("..\\")
             || (candidate.contains("/") && !candidate.hasPrefix("~"))
+            || (candidate.contains("\\") && !candidate.hasPrefix("~"))
             || (lineNumber != nil && isBareFileName(candidate))
     }
 
@@ -159,6 +175,29 @@ nonisolated enum WorkspaceTextFileLinkParser {
             && !candidate.contains("\\")
             && !candidate.hasPrefix("~")
             && !((candidate as NSString).pathExtension.isEmpty)
+    }
+
+    private static func hasNetworkURLScheme(_ candidate: String) -> Bool {
+        let nsCandidate = candidate as NSString
+        let fullRange = NSRange(location: 0, length: nsCandidate.length)
+        let pattern = #"^[A-Za-z][A-Za-z0-9+.-]*://"#
+        return (try? NSRegularExpression(pattern: pattern))?
+            .firstMatch(in: candidate, range: fullRange) != nil
+    }
+
+    private static func isWindowsDriveScheme(_ scheme: String) -> Bool {
+        guard scheme.count == 1, let scalar = scheme.unicodeScalars.first else {
+            return false
+        }
+        return CharacterSet.letters.contains(scalar)
+    }
+
+    private static func isWindowsAbsolutePath(_ candidate: String) -> Bool {
+        let nsCandidate = candidate as NSString
+        let fullRange = NSRange(location: 0, length: nsCandidate.length)
+        let pattern = #"^[A-Za-z]:(?!//)[\\/].+"#
+        return (try? NSRegularExpression(pattern: pattern))?
+            .firstMatch(in: candidate, range: fullRange) != nil
     }
 }
 
