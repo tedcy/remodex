@@ -1,5 +1,5 @@
 // FILE: workspace-file.test.js
-// Purpose: Verifies bridge-side local text file previews stay scoped and size-safe.
+// Purpose: Verifies bridge-side local text file previews are explicit and size-safe.
 // Layer: Unit test
 // Exports: node:test suite
 // Depends on: node:test, node:assert/strict, fs, os, path, ../src/workspace-handler
@@ -116,22 +116,72 @@ test("workspace/readFile rejects broad cwd roots", async (t) => {
   await assertWorkspaceError(
     () => handleWorkspaceMethod("workspace/readFile", {
       cwd: os.homedir(),
-      path: filePath,
+      path: path.basename(homeChild) + "/notes.txt",
     }),
     "file_path_not_allowed"
   );
 });
 
-test("workspace/readFile rejects paths outside the workspace", async (t) => {
+test("workspace/readFile allows explicit absolute paths outside the workspace", async (t) => {
   const workspace = gitWorkspace(t);
   const externalDir = tempDir(t, "remodex-file-external-");
+  const externalPath = path.join(externalDir, "secret.txt");
+  fs.writeFileSync(externalPath, "secret");
+
+  const result = await handleWorkspaceMethod("workspace/readFile", {
+    cwd: workspace,
+    path: externalPath,
+  });
+
+  assert.equal(result.path, fs.realpathSync(externalPath));
+  assert.equal(result.text, "secret");
+});
+
+test("workspace/readFile allows explicit extensionless text paths outside the workspace", async (t) => {
+  const workspace = gitWorkspace(t);
+  const externalDir = tempDir(t, "remodex-file-external-");
+  const externalPath = path.join(externalDir, "hosts");
+  fs.writeFileSync(externalPath, "127.0.0.1 localhost\n");
+
+  const result = await handleWorkspaceMethod("workspace/readFile", {
+    cwd: workspace,
+    path: externalPath,
+  });
+
+  assert.equal(result.path, fs.realpathSync(externalPath));
+  assert.equal(result.mimeType, "text/plain");
+  assert.equal(result.text, "127.0.0.1 localhost\n");
+});
+
+test("workspace/readFile allows explicit file URLs outside the workspace", async (t) => {
+  const workspace = gitWorkspace(t);
+  const externalDir = tempDir(t, "remodex-file-external-");
+  const externalPath = path.join(externalDir, "secret.txt");
+  fs.writeFileSync(externalPath, "secret");
+
+  const result = await handleWorkspaceMethod("workspace/readFile", {
+    cwd: workspace,
+    path: pathToFileURL(externalPath).toString(),
+  });
+
+  assert.equal(result.path, fs.realpathSync(externalPath));
+  assert.equal(result.text, "secret");
+});
+
+test("workspace/readFile rejects relative paths outside the workspace", async (t) => {
+  const parent = tempDir(t, "remodex-file-parent-");
+  const workspace = path.join(parent, "workspace");
+  const externalDir = path.join(parent, "external");
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(externalDir);
+  execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
   const externalPath = path.join(externalDir, "secret.txt");
   fs.writeFileSync(externalPath, "secret");
 
   await assertWorkspaceError(
     () => handleWorkspaceMethod("workspace/readFile", {
       cwd: workspace,
-      path: externalPath,
+      path: "../external/secret.txt",
     }),
     "file_path_not_allowed"
   );
@@ -148,7 +198,7 @@ test("workspace/readFile rejects symlink escapes", async (t) => {
   await assertWorkspaceError(
     () => handleWorkspaceMethod("workspace/readFile", {
       cwd: workspace,
-      path: symlinkPath,
+      path: path.basename(symlinkPath),
     }),
     "file_path_not_allowed"
   );
@@ -158,6 +208,20 @@ test("workspace/readFile rejects unsupported file types", async (t) => {
   const workspace = gitWorkspace(t);
   const filePath = path.join(workspace, "preview.png");
   fs.writeFileSync(filePath, "not read through readFile");
+
+  await assertWorkspaceError(
+    () => handleWorkspaceMethod("workspace/readFile", {
+      cwd: workspace,
+      path: filePath,
+    }),
+    "unsupported_file_type"
+  );
+});
+
+test("workspace/readFile rejects extensionless binary files", async (t) => {
+  const workspace = gitWorkspace(t);
+  const filePath = path.join(workspace, "blob");
+  fs.writeFileSync(filePath, Buffer.from([0x00, 0xff, 0x01, 0x02]));
 
   await assertWorkspaceError(
     () => handleWorkspaceMethod("workspace/readFile", {

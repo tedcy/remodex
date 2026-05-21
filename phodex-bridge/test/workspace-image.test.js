@@ -1,5 +1,5 @@
 // FILE: workspace-image.test.js
-// Purpose: Verifies bridge-side local image preview reads stay scoped and size-safe.
+// Purpose: Verifies bridge-side local image preview reads are explicit and size-safe.
 // Layer: Unit test
 // Exports: node:test suite
 // Depends on: node:test, node:assert/strict, fs, os, path, ../src/workspace-handler
@@ -311,20 +311,44 @@ test("workspace/readImage rejects non-image paths", async () => {
   );
 });
 
-test("workspace/readImage rejects workspace images when cwd is missing", async () => {
+test("workspace/readImage allows explicit absolute image paths without cwd", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.homedir(), "remodex-image-"));
   const imagePath = path.join(tempDir, "preview.png");
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  fs.writeFileSync(imagePath, bytes);
+
+  try {
+    const result = await handleWorkspaceMethod("workspace/readImage", {
+      path: imagePath,
+    });
+
+    assert.equal(result.path, fs.realpathSync(imagePath));
+    assert.equal(result.dataBase64, bytes.toString("base64"));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("workspace/readImage rejects relative image paths outside the workspace", async () => {
+  const parentDir = fs.mkdtempSync(path.join(os.homedir(), "remodex-image-parent-"));
+  const workspaceDir = path.join(parentDir, "workspace");
+  const externalDir = path.join(parentDir, "external");
+  fs.mkdirSync(workspaceDir);
+  fs.mkdirSync(externalDir);
+  execFileSync("git", ["init"], { cwd: workspaceDir, stdio: "ignore" });
+  const imagePath = path.join(externalDir, "preview.png");
   fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
   try {
-  await assert.rejects(
-    () => handleWorkspaceMethod("workspace/readImage", {
-      path: imagePath,
-    }),
-    /Only images in this workspace/
-  );
+    await assert.rejects(
+      () => handleWorkspaceMethod("workspace/readImage", {
+        cwd: workspaceDir,
+        path: "../external/preview.png",
+      }),
+      /Only images in this workspace/
+    );
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(parentDir, { recursive: true, force: true });
   }
 });
 
@@ -415,7 +439,7 @@ test("workspace/readImage rejects cwd widening outside a repository", async () =
     await assert.rejects(
       () => handleWorkspaceMethod("workspace/readImage", {
         cwd: "/",
-        path: imagePath,
+        path: path.relative("/", imagePath),
       }),
       /Only images in this workspace/
     );

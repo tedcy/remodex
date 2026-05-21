@@ -25,6 +25,7 @@ const GIT_TIMEOUT_MS = 30_000;
 const MAX_IMAGE_READ_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_PREVIEW_READ_BYTES = 2 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 2 * 1024 * 1024;
+const TEXT_FILE_SNIFF_BYTES = 8 * 1024;
 const MIN_IMAGE_PREVIEW_PIXEL_DIMENSION = 128;
 const MAX_IMAGE_PREVIEW_PIXEL_DIMENSION = 3_200;
 const IMAGE_PREVIEW_RETRY_SCALE = 0.75;
@@ -203,27 +204,28 @@ async function handleWorkspaceMethod(method, params) {
   }
 }
 
-// Reads a bounded text file from the selected workspace without exposing arbitrary host paths.
+// Reads a bounded text file. Explicit absolute paths are allowed for host file inspection;
+// relative paths stay scoped to the selected workspace.
 async function workspaceReadFile(params) {
-  const requestedPath = normalizedFileRequestPath(
+  const requestedFile = normalizedLocalRequestPath(
     firstNonEmptyString([params.path, params.filePath, params.localPath])
   );
-  if (!requestedPath) {
+  if (!requestedFile) {
     throw workspaceError("missing_file_path", "The request must include a file path.");
   }
 
-  const cwd = await resolveWorkspaceCwd(params);
-  const filePath = path.isAbsolute(requestedPath)
-    ? path.resolve(requestedPath)
-    : path.resolve(cwd, requestedPath);
-  const [realFilePath, realWorkspaceRoot] = await Promise.all([
-    realpathOrNull(filePath),
-    resolveFileWorkspaceRoot(cwd),
-  ]);
+  const cwd = requestedFile.isExplicitAbsolute ? null : await resolveWorkspaceCwd(params);
+  const filePath = requestedFile.isExplicitAbsolute
+    ? path.resolve(requestedFile.path)
+    : path.resolve(cwd, requestedFile.path);
+  const realFilePath = await realpathOrNull(filePath);
   if (!realFilePath) {
     throw workspaceError("file_not_found", "The file no longer exists on this computer.");
   }
-  if (!realWorkspaceRoot || !isPathInside(realFilePath, realWorkspaceRoot)) {
+  const realWorkspaceRoot = requestedFile.isExplicitAbsolute ? null : await resolveFileWorkspaceRoot(cwd);
+  const isScopedRelativeFile =
+    realWorkspaceRoot && isPathInside(realFilePath, realWorkspaceRoot);
+  if (!requestedFile.isExplicitAbsolute && !isScopedRelativeFile) {
     throw workspaceError("file_path_not_allowed", "Only files in the selected workspace can be previewed.");
   }
 
@@ -232,7 +234,7 @@ async function workspaceReadFile(params) {
     throw workspaceError("not_a_file", "The requested path is not a file.");
   }
 
-  const mimeType = textMimeTypeForPath(realFilePath);
+  const mimeType = textMimeTypeForPath(realFilePath) || await sniffTextMimeType(realFilePath, stat);
   if (!mimeType) {
     throw workspaceError("unsupported_file_type", "Only text files can be previewed.");
   }
@@ -259,7 +261,7 @@ async function workspaceReadFile(params) {
   };
 }
 
-function normalizedFileRequestPath(rawPath) {
+function normalizedLocalRequestPath(rawPath) {
   if (!rawPath) {
     return null;
   }
@@ -279,7 +281,11 @@ function normalizedFileRequestPath(rawPath) {
     candidate = decodePercentEscapes(candidate);
   }
 
-  return stripTrailingLineColumnSuffix(candidate);
+  const normalizedPath = stripTrailingLineColumnSuffix(candidate);
+  return {
+    path: normalizedPath,
+    isExplicitAbsolute: path.isAbsolute(normalizedPath),
+  };
 }
 
 function decodePercentEscapes(value) {
@@ -308,6 +314,58 @@ function textMimeTypeForPath(filePath) {
   return TEXT_MIME_TYPES_BY_EXTENSION.get(path.extname(filePath).toLowerCase()) || null;
 }
 
+async function sniffTextMimeType(filePath, stat) {
+  if (path.extname(filePath)) {
+    return null;
+  }
+  if (stat.size === 0) {
+    return "text/plain";
+  }
+
+  let handle = null;
+  try {
+    handle = await fs.promises.open(filePath, "r");
+    const sampleLength = Math.min(stat.size, TEXT_FILE_SNIFF_BYTES);
+    const sample = Buffer.alloc(sampleLength);
+    const { bytesRead } = await handle.read(sample, 0, sampleLength, 0);
+    if (looksLikeTextBuffer(sample.subarray(0, bytesRead))) {
+      return "text/plain";
+    }
+  } catch {
+    return null;
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+
+  return null;
+}
+
+function looksLikeTextBuffer(buffer) {
+  if (!buffer.length) {
+    return true;
+  }
+  if (buffer.includes(0)) {
+    return false;
+  }
+
+  let controlCount = 0;
+  for (const byte of buffer) {
+    const isCommonWhitespace = byte === 0x09 || byte === 0x0a || byte === 0x0c || byte === 0x0d;
+    if ((byte < 0x20 && !isCommonWhitespace) || byte === 0x7f) {
+      controlCount += 1;
+    }
+  }
+  if (controlCount / buffer.length > 0.01) {
+    return false;
+  }
+
+  const decoded = buffer.toString("utf8");
+  const replacementCount = (decoded.match(/\uFFFD/g) || []).length;
+  return replacementCount <= Math.max(1, Math.floor(buffer.length * 0.01));
+}
+
 // Text previews are scoped to the Git repo root when safe; otherwise they stay inside cwd.
 async function resolveFileWorkspaceRoot(cwd) {
   const realCwd = await realpathOrNull(cwd);
@@ -323,19 +381,23 @@ async function resolveFileWorkspaceRoot(cwd) {
   return realCwd;
 }
 
-// Reads recognized local image files from the bound repo, Codex image cache, or host temp screenshot folders.
+// Reads recognized local image files. Explicit absolute paths are allowed for host file
+// inspection; relative paths stay scoped to the bound repo/cwd.
 async function workspaceReadImage(params) {
-  const requestedPath = firstNonEmptyString([params.path, params.filePath, params.localPath]);
-  if (!requestedPath) {
+  const requestedImage = normalizedLocalRequestPath(
+    firstNonEmptyString([params.path, params.filePath, params.localPath])
+  );
+  if (!requestedImage) {
     throw workspaceError("missing_image_path", "The request must include an image path.");
   }
 
-  const cwd = firstNonEmptyString([params.cwd, params.currentWorkingDirectory])
+  const requestedCwd = firstNonEmptyString([params.cwd, params.currentWorkingDirectory]);
+  const cwd = !requestedImage.isExplicitAbsolute && requestedCwd
     ? await resolveWorkspaceCwd(params)
     : null;
-  const imagePath = path.isAbsolute(requestedPath)
-    ? path.resolve(requestedPath)
-    : path.resolve(cwd || process.cwd(), requestedPath);
+  const imagePath = requestedImage.isExplicitAbsolute
+    ? path.resolve(requestedImage.path)
+    : path.resolve(cwd || process.cwd(), requestedImage.path);
   const extension = path.extname(imagePath).toLowerCase();
   const mimeType = IMAGE_MIME_TYPES_BY_EXTENSION.get(extension);
   if (!mimeType) {
@@ -355,7 +417,8 @@ async function workspaceReadImage(params) {
     realTemporaryImageRoots(),
   ]);
   const isAllowed =
-    (realWorkspaceRoot && isPathInside(realImagePath, realWorkspaceRoot))
+    requestedImage.isExplicitAbsolute
+    || (realWorkspaceRoot && isPathInside(realImagePath, realWorkspaceRoot))
     || (realGeneratedImagesRoot && isPathInside(realImagePath, realGeneratedImagesRoot))
     || realTempRoots.some((tempRoot) => isPathInside(realImagePath, tempRoot));
   if (!isAllowed) {
