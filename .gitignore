@@ -18,6 +18,8 @@ build/
 # Environment / secrets
 .env
 .env.*
+relay.env
+**/relay.env
 *.pem
 *.p12
 *.key

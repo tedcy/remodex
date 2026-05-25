@@ -5,8 +5,46 @@ $RuntimeDir = Join-Path $BaseDir 'runtime'
 $RelayDir = Join-Path $RuntimeDir 'relay'
 $BridgeDir = Join-Path $RuntimeDir 'phodex-bridge'
 $LogDir = Join-Path $BaseDir 'logs'
+$RelayEnvFile = Join-Path $BaseDir 'relay.env'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
+function Import-RemodexEnvFile {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $false
+  }
+
+  foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed.StartsWith('#')) {
+      continue
+    }
+    if ($trimmed -match '^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+      $name = $Matches[1]
+      $value = $Matches[2].Trim()
+    } else {
+      continue
+    }
+
+    if ($name -notmatch '^REMODEX_') {
+      continue
+    }
+
+    if ($value.Length -ge 2) {
+      $first = $value.Substring(0, 1)
+      $last = $value.Substring($value.Length - 1, 1)
+      if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+        $value = $value.Substring(1, $value.Length - 2)
+      }
+    }
+    [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+  }
+
+  return $true
+}
+
+$RelayConfigLoaded = Import-RemodexEnvFile -Path $RelayEnvFile
 $RelayPort = if ($env:REMODEX_RELAY_PORT) { [int]$env:REMODEX_RELAY_PORT } else { 9000 }
 $RelayHost = $env:REMODEX_RELAY_HOST
 if (-not $RelayHost) {
@@ -19,6 +57,7 @@ if (-not $RelayHost) {
 }
 if (-not $RelayHost) { $RelayHost = '127.0.0.1' }
 $RelayUrl = if ($env:REMODEX_RELAY) { $env:REMODEX_RELAY } else { "ws://$($RelayHost):$RelayPort/relay" }
+$UseLocalRelay = $RelayUrl -match '^ws://(127\.0\.0\.1|localhost)(:\d+)?/relay$' -or $RelayUrl -eq "ws://$($RelayHost):$RelayPort/relay"
 
 $CodexBinRoot = Join-Path $HOME ([IO.Path]::Combine('AppData', 'Local', 'OpenAI', 'Codex', 'bin'))
 $NodeExe = $null
@@ -75,12 +114,12 @@ function Test-RelayHealth {
   }
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $RelayDir 'server.js'))) { throw "Missing relay runtime: $RelayDir" }
+if ($UseLocalRelay -and -not (Test-Path -LiteralPath (Join-Path $RelayDir 'server.js'))) { throw "Missing relay runtime: $RelayDir" }
 if (-not (Test-Path -LiteralPath (Join-Path $BridgeDir 'bin\remodex.js'))) { throw "Missing bridge runtime: $BridgeDir" }
 
 $startedRelay = $null
-$usingExistingRelay = Test-RelayHealth
-if (-not $usingExistingRelay) {
+$usingExistingRelay = $UseLocalRelay -and (Test-RelayHealth)
+if ($UseLocalRelay -and -not $usingExistingRelay) {
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   $relayOut = Join-Path $LogDir "relay-$stamp.out.log"
   $relayErr = Join-Path $LogDir "relay-$stamp.err.log"
@@ -101,7 +140,18 @@ $env:REMODEX_DEVICE_STATE_DIR = Join-Path $BaseDir 'state'
 
 Write-Host ''
 Write-Host '[remodex-local] Relay URL:' $RelayUrl
-Write-Host '[remodex-local] Health:' "http://$($RelayHost):$RelayPort/health"
+if ($RelayConfigLoaded) {
+  Write-Host '[remodex-local] Relay config:' $RelayEnvFile
+} elseif ($env:REMODEX_RELAY) {
+  Write-Host '[remodex-local] Relay config: REMODEX_RELAY from process environment'
+} else {
+  Write-Host '[remodex-local] Relay config: none, using local relay fallback'
+}
+if ($UseLocalRelay) {
+  Write-Host '[remodex-local] Health:' "http://$($RelayHost):$RelayPort/health"
+} else {
+  Write-Host '[remodex-local] Health: using configured remote relay'
+}
 Write-Host '[remodex-local] Node:' $NodeExe
 if ($CodexExe) { Write-Host '[remodex-local] Codex:' $CodexExe } else { Write-Host '[remodex-local] Codex: not found on PATH; bridge may fail to start codex app-server.' }
 if ($env:CLIPROXY_API_KEY) { Write-Host '[remodex-local] Cliproxy key loaded from .codex\auth_custom.toml' }

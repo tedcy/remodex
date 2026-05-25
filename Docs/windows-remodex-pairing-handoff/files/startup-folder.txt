@@ -1,0 +1,16 @@
+Startup folder entry:
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\RemodexBridgeAutoStart.vbs
+
+Purpose:
+Start the Remodex bridge automatically when the Windows user logs in.
+
+Entry content:
+Copy autostart-remodex-hidden.vbs to the Startup folder path above.
+
+Manual pairing:
+Use the desktop entry instead:
+%USERPROFILE%\Desktop\Remodex-Pairing-Code.cmd
+
+SSH pairing:
+Run the same restart script directly:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\remodex\restart-remodex-and-show-log.ps1 -NoPause
